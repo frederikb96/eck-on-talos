@@ -1,7 +1,8 @@
 ---
 machine:
   install:
-    disk: /dev/sda
+    diskSelector:
+      wwid: "REPLACE_WITH_NODE2_SYSTEM_DISK_WWID"
   network:
     hostname: node2
     nameservers:

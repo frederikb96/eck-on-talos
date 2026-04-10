@@ -114,9 +114,7 @@ done
 # error getting version: rpc error: code = Unimplemented desc = API is not implemented in maintenance mode
 ```
 
-Expected final output: each node prints `API is not implemented in maintenance mode`. That's success → jump to [Step 2 of the main guide](README.md#step-2--locate-the-nodes-and-verify-disks).
-
-**Azure-specific notes for the main guide** (same as the Portal path — see [bottom of this file](#continue-with-the-main-guide) for the full list): interface is `eth0`, gateway is `10.0.0.1`, system disk is `/dev/sda`, data disk is `/dev/sdb`, and `cluster.controlPlane.endpoint` must be `https://<node1-public-ip>:6443`.
+Expected final output: each node prints `API is not implemented in maintenance mode`. That's success — jump to the section below on "Continue with the main guide" to proceed with the rest of the steps.
 
 **Cleanup when done:** `az group delete -n "$RG" --yes --no-wait`
 
@@ -308,13 +306,14 @@ Expected: each prints `API is not implemented in maintenance mode`. That's succe
 
 ## Continue with the main guide
 
-Jump to **[Step 2 — Locate the nodes and verify disks](README.md#step-2--locate-the-nodes-and-verify-disks)** and keep going. Azure-specific notes for the rest of the main guide:
+Before jumping to Step 2 some Azure-specific notes for the rest of the main guide:
 
 - Interface name inside Talos: **`eth0`** (accelerated networking default). Leave it.
 - Gateway: **`10.0.0.1`** (Azure subnet default).
-- System disk: 64 GiB `/dev/sda`. Data disk: 128 GiB `/dev/sdb`. The `UserVolumeConfig` selector `!system_disk` picks `/dev/sdb` automatically — no edits needed. Verify with `talosctl -n $tip get disks --insecure`.
 - `talosctl`/`kubectl` from your laptop use the **public IPs**. Private IPs are only for inter-node traffic.
 - In Step 3 (Talos config gen), set `cluster.controlPlane.endpoint` to `https://<node1-public-ip>:6443`, not the private IP.
+
+Now jump to **[Step 2 — Locate the nodes and verify disks](README.md#step-2--locate-the-nodes-and-verify-disks)**.
 
 ## Clean-up
 

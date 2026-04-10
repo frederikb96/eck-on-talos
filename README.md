@@ -262,18 +262,75 @@ talosctl -n "$tmp_ip" version --insecure
 # Expected: "API is not implemented in maintenance mode" → that's the green signal
 ```
 
-Verify the two disks and the network interface:
+First sanity-check what the VM sees:
 
 ```bash
 talosctl -n "$tmp_ip" get disks --insecure
 talosctl -n "$tmp_ip" get links --insecure
 ```
 
-**You are looking for:**
+You should see exactly two real disks (plus `loop0`/`loop1`, ignore those) and one network interface.
 
-- A system disk at `/dev/sda` (or `/dev/vda` on KVM, `/dev/nvme0n1` on NVMe, etc.). Adjust `machine.install.disk` in `talos/nodes/node*.yaml` if yours differs.
-- A second, empty data disk (size ≥ 100 GiB). The `UserVolumeConfig` in the same file selects any non-system disk with `!system_disk`, so it does NOT need a fixed path.
-- A primary interface named `eth0` on most VMs. If yours is `ens18`, `ens192`, `enp1s0`… update the `interface:` field in `talos/nodes/node*.yaml`.
+### 🚨 Mandatory — pin the OS disk by a stable identifier
+
+Short device names like `/dev/sda`, `/dev/sdb`, `/dev/vda`, `/dev/nvme0n1` are **not stable**: the letter Talos assigns depends on the platform, the kernel, and sometimes even the reboot. If you leave `machine.install` pointing at the wrong letter, a future `talosctl upgrade` will reinstall Talos onto your **data disk** and wipe it.
+
+Instead, pin the install target with `machine.install.diskSelector`, using a hardware field that never changes. Do this **for every node** before applying any config.
+
+**Step 1 — find out which disk Talos is currently booted from:**
+
+```bash
+talosctl -n "$tmp_ip" get systemdisk --insecure
+```
+
+Output: a short ID in the `DISK` column like `sda`, `sdb`, or `nvme0n1`. That's the OS disk.
+
+**Step 2 — dump the full spec of that disk:**
+
+```bash
+talosctl -n "$tmp_ip" get disks <id> --insecure -o yaml
+```
+
+Look for these fields in `spec:`:
+
+```yaml
+spec:
+    dev_path: /dev/sdb
+    size: 68719476736
+    model: Virtual Disk
+    serial: ""                                   # often empty on cloud VMs
+    wwid: naa.6002248059bddfe77ab4c2f59bca39e4   # almost always populated
+```
+
+**Step 3 — pick ONE stable field and paste it into the node YAML.** `machine.install.diskSelector` accepts `wwid`, `serial`, `uuid`, `model`, or `busPath`. Use whichever is populated and unique on your host:
+
+- **`wwid`** — recommended default. Set on virtually every SCSI/SATA/NVMe disk including cloud "Virtual Disk". Use this if you're unsure.
+- **`serial`** — shorter and human-readable, great on bare metal (physical NVMe/SATA). **Often empty on cloud VMs** — if `serial: ""`, fall back to `wwid`.
+
+Open `talos/nodes/node<N>.yaml` and replace the placeholder:
+
+```yaml
+machine:
+  install:
+    diskSelector:
+      wwid: "naa.6002248059bddfe77ab4c2f59bca39e4"
+```
+
+or, on bare metal where you prefer the serial:
+
+```yaml
+machine:
+  install:
+    diskSelector:
+      serial: "S675NX0T332822"
+```
+
+Repeat for each of the three nodes — every machine has its own identifier.
+
+### Data disk and network interface
+
+- **Data disk:** second disk, size ≥ 100 GiB. The `UserVolumeConfig` at the bottom of each node YAML uses `!system_disk` to pick whatever disk is NOT the OS one, so it needs no edit regardless of device name.
+- **Network interface:** usually `eth0`. If your VM uses `ens18`, `ens192`, `enp1s0`, etc. (check `get links` output), update the `interface:` field in `talos/nodes/node*.yaml`.
 
 Repeat for all three VMs. Take notes: which DHCP IP maps to which planned hostname (`node1` → `10.0.0.11`, etc.).
 
