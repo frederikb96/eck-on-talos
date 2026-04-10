@@ -22,7 +22,7 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
 
 ## Table of Contents
 
-- [ECK on Talos](#eck-on-talos)
+- [ ECK on Talos](#-eck-on-talos)
   - [Table of Contents](#table-of-contents)
   - [What you get](#what-you-get)
   - [Optional extensions (not part of this guide, but easy to add later)](#optional-extensions-not-part-of-this-guide-but-easy-to-add-later)
@@ -39,6 +39,8 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
     - [Option B — `dd` from a rescue system](#option-b--dd-from-a-rescue-system)
     - [What "maintenance mode" means](#what-maintenance-mode-means)
   - [Step 2 — Locate the nodes and verify disks](#step-2--locate-the-nodes-and-verify-disks)
+    - [🚨 Mandatory — pin the OS disk by a stable identifier](#-mandatory--pin-the-os-disk-by-a-stable-identifier)
+    - [Data disk and network interface](#data-disk-and-network-interface)
   - [Step 3 — Generate the Talos machine config](#step-3--generate-the-talos-machine-config)
   - [Step 4 — Apply the config to each node](#step-4--apply-the-config-to-each-node)
   - [Step 5 — Bootstrap the cluster](#step-5--bootstrap-the-cluster)
@@ -170,9 +172,10 @@ talosctl version            # ≥ 1.12
 kubectl version --client    # ≥ 1.28
 helm version                # ≥ 3.14
 openssl version             # 1.1 or 3.x
+jq --version                # any recent version
 ```
 
-Install commands that work on any Debian/Ubuntu box. All four binaries come from their upstream release pages — no package manager gymnastics needed:
+Install commands that work on any Debian/Ubuntu box. All binaries come from their upstream release pages — no package manager gymnastics needed:
 
 ```bash
 # talosctl — direct binary from the siderolabs/talos GitHub releases
@@ -186,10 +189,10 @@ sudo install kubectl /usr/local/bin/ && rm kubectl
 # helm — official install script
 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-# openssl is almost certainly already installed on your distro
+# openssl + jq are almost certainly already installed — if not: sudo apt install openssl jq
 ```
 
-> 🛈 **Homebrew alternative**: if you use Homebrew on Linux, `brew install siderolabs/tap/talosctl kubernetes-cli helm` covers all four in one command. See the [talosctl install docs](https://www.talos.dev/latest/talos-guides/install/talosctl/) for macOS / other platforms.
+> 🛈 **Homebrew alternative**: if you use Homebrew on Linux, `brew install siderolabs/tap/talosctl kubernetes-cli helm jq` covers everything in one command. See the [talosctl install docs](https://www.talos.dev/latest/talos-guides/install/talosctl/) for macOS / other platforms.
 
 ### Clone this repository
 
@@ -254,60 +257,58 @@ Until you apply a machine config, Talos has:
 
 ## Step 2 — Locate the nodes and verify disks
 
-For each VM, find the DHCP IP (call it `$tmp_ip`) and confirm Talos is reachable:
+Find the three DHCP IPs (check your DHCP leases or hypervisor console), then export them — every command in Step 2 and Step 4 reuses these three variables:
 
 ```bash
-tmp_ip="192.168.1.50"   # whatever the DHCP server gave the VM
-talosctl -n "$tmp_ip" version --insecure
-# Expected: "API is not implemented in maintenance mode" → that's the green signal
+tmp_ip_1="192.168.1.50"   # whatever the DHCP server gave VM1 → will become 10.0.0.11
+tmp_ip_2="192.168.1.51"   # VM2 → 10.0.0.12
+tmp_ip_3="192.168.1.52"   # VM3 → 10.0.0.13
 ```
 
-First sanity-check what the VM sees:
+Confirm all three are reachable in maintenance mode:
 
 ```bash
-talosctl -n "$tmp_ip" get disks --insecure
-talosctl -n "$tmp_ip" get links --insecure
+for ip in "$tmp_ip_1" "$tmp_ip_2" "$tmp_ip_3"; do
+  talosctl -n "$ip" version --insecure
+done
+# Expected: each prints "API is not implemented in maintenance mode" — that's the green signal
 ```
 
-You should see exactly two real disks (plus `loop0`/`loop1`, ignore those) and one network interface.
+Sanity-check what each VM sees — exactly two real disks (ignore `loop0`/`loop1`) and one network interface:
+
+```bash
+for ip in "$tmp_ip_1" "$tmp_ip_2" "$tmp_ip_3"; do
+  echo "=== $ip ==="
+  talosctl -n "$ip" get disks --insecure
+  talosctl -n "$ip" get links --insecure
+done
+```
 
 ### 🚨 Mandatory — pin the OS disk by a stable identifier
 
-Short device names like `/dev/sda`, `/dev/sdb`, `/dev/vda`, `/dev/nvme0n1` are **not stable**: the letter Talos assigns depends on the platform, the kernel, and sometimes even the reboot. If you leave `machine.install` pointing at the wrong letter, a future `talosctl upgrade` will reinstall Talos onto your **data disk** and wipe it.
+Short device names (`/dev/sda`, `/dev/vda`, `/dev/nvme0n1`) are **not stable** — the letter depends on platform, kernel, and can change between reboots. Even identical VMs in the same cloud cluster can enumerate differently. If `machine.install` points at the wrong letter, a future `talosctl upgrade` will reinstall Talos onto your **data disk** and wipe it.
 
-Instead, pin the install target with `machine.install.diskSelector`, using a hardware field that never changes. Do this **for every node** before applying any config.
+**Prefer `serial` on bare metal?** `machine.install.diskSelector` also accepts `serial`, `uuid`, `model`, `busPath`. Physical NVMe/SATA drives usually have a shorter `serial:` — swap `wwid:` for `serial:` in the YAML. Cloud VMs often have empty `serial`, so `wwid` is the safe universal default. Run `talosctl get disks <id> --insecure -o yaml` on any node to see every field Talos surfaces.
 
-**Step 1 — find out which disk Talos is currently booted from:**
-
-```bash
-talosctl -n "$tmp_ip" get systemdisk --insecure
-```
-
-Output: a short ID in the `DISK` column like `sda`, `sdb`, or `nvme0n1`. That's the OS disk.
-
-**Step 2 — dump the full spec of that disk:**
+Pin the install target by `wwid` (hardware ID that never changes). Run this to print the wwid of each node's current OS disk:
 
 ```bash
-talosctl -n "$tmp_ip" get disks <id> --insecure -o yaml
+for ip in "$tmp_ip_1" "$tmp_ip_2" "$tmp_ip_3"; do
+  sysdisk=$(talosctl -n "$ip" get systemdisk --insecure -o json | jq -r .spec.diskID)
+  wwid=$(talosctl -n "$ip" get disks "$sysdisk" --insecure -o json | jq -r .spec.wwid)
+  printf "%-16s  %-10s  %s\n" "$ip" "$sysdisk" "$wwid"
+done
 ```
 
-Look for these fields in `spec:`:
+Example output:
 
-```yaml
-spec:
-    dev_path: /dev/sdb
-    size: 68719476736
-    model: Virtual Disk
-    serial: ""                                   # often empty on cloud VMs
-    wwid: naa.6002248059bddfe77ab4c2f59bca39e4   # almost always populated
+```text
+10.0.0.11         sdb         naa.6002248059bddfe77ab4c2f59bca39e4
+10.0.0.12         sda         naa.600224800526fac1cb6de3faaa4744bd
+10.0.0.13         sda         naa.6002248071cc72055d2a33429c539d4f
 ```
 
-**Step 3 — pick ONE stable field and paste it into the node YAML.** `machine.install.diskSelector` accepts `wwid`, `serial`, `uuid`, `model`, or `busPath`. Use whichever is populated and unique on your host:
-
-- **`wwid`** — recommended default. Set on virtually every SCSI/SATA/NVMe disk including cloud "Virtual Disk". Use this if you're unsure.
-- **`serial`** — shorter and human-readable, great on bare metal (physical NVMe/SATA). **Often empty on cloud VMs** — if `serial: ""`, fall back to `wwid`.
-
-Open `talos/nodes/node<N>.yaml` and replace the placeholder:
+Now **manually** paste each node's wwid into the matching `talos/nodes/node<N>.yaml`, replacing the placeholder:
 
 ```yaml
 machine:
@@ -316,23 +317,10 @@ machine:
       wwid: "naa.6002248059bddfe77ab4c2f59bca39e4"
 ```
 
-or, on bare metal where you prefer the serial:
-
-```yaml
-machine:
-  install:
-    diskSelector:
-      serial: "S675NX0T332822"
-```
-
-Repeat for each of the three nodes — every machine has its own identifier.
-
 ### Data disk and network interface
 
 - **Data disk:** second disk, size ≥ 100 GiB. The `UserVolumeConfig` at the bottom of each node YAML uses `!system_disk` to pick whatever disk is NOT the OS one, so it needs no edit regardless of device name.
 - **Network interface:** usually `eth0`. If your VM uses `ens18`, `ens192`, `enp1s0`, etc. (check `get links` output), update the `interface:` field in `talos/nodes/node*.yaml`.
-
-Repeat for all three VMs. Take notes: which DHCP IP maps to which planned hostname (`node1` → `10.0.0.11`, etc.).
 
 ---
 
@@ -368,11 +356,11 @@ talosctl config node 10.0.0.11
 
 ## Step 4 — Apply the config to each node
 
-Apply the shared `controlplane.yaml` **plus** the per-node patch to every node. The node's hostname, interface, static IP and data disk mount all come from the patch:
+Apply the shared `controlplane.yaml` **plus** the per-node patch to every node. The node's hostname, interface, static IP and data disk mount all come from the patch. Reuse the `tmp_ip_1/2/3` variables you set in Step 2:
 
 ```bash
 talosctl apply-config --insecure \
-  --nodes <tmp_ip_of_first_vm> \
+  --nodes "$tmp_ip_1" \
   --file _out/controlplane.yaml \
   --config-patch @talos/nodes/node1.yaml
 ```
@@ -381,12 +369,12 @@ Talos writes the config to its `STATE` partition, restarts networking, and you'l
 
 ```bash
 talosctl apply-config --insecure \
-  --nodes <tmp_ip_of_second_vm> \
+  --nodes "$tmp_ip_2" \
   --file _out/controlplane.yaml \
   --config-patch @talos/nodes/node2.yaml
 
 talosctl apply-config --insecure \
-  --nodes <tmp_ip_of_third_vm> \
+  --nodes "$tmp_ip_3" \
   --file _out/controlplane.yaml \
   --config-patch @talos/nodes/node3.yaml
 ```
@@ -1048,7 +1036,7 @@ Same reason. Every "proper" component adds:
 For three nodes running one Elasticsearch cluster on a LAN, NodePort gives you de-facto HA across all three nodes with zero extra components. Local PVs pin data to a node, which is exactly what Elasticsearch's replication model already assumes.
 
 **Can I add a 4th node later?**
-Yes. Create `talos/nodes/node4.yaml`, run `talosctl apply-config --insecure --file _out/controlplane.yaml --config-patch @talos/nodes/node4.yaml --nodes <tmp_ip>`. Then add a 4th PV to `kubernetes/storage/pvs.yaml`, bump the Elasticsearch `nodeSet` count to 4, add the 4th IP to every `subjectAltNames` block, and `helm upgrade`. Data will rebalance automatically.
+Yes. Create `talos/nodes/node4.yaml`, run `talosctl apply-config --insecure --file _out/controlplane.yaml --config-patch @talos/nodes/node4.yaml --nodes "$tmp_ip_4"` (set `tmp_ip_4` to the new VM's DHCP IP first). Then add a 4th PV to `kubernetes/storage/pvs.yaml`, bump the Elasticsearch `nodeSet` count to 4, add the 4th IP to every `subjectAltNames` block, and `helm upgrade`. Data will rebalance automatically.
 
 **Can I run the monitoring cluster separately?**
 Yes. Remove the `monitoring:` blocks from `eck-elasticsearch` and `eck-kibana` and point them at a separate ECK cluster's `elasticsearchRefs`. Elastic's official recommendation is a dedicated monitoring cluster, but for small deployments self-monitoring into the same cluster is the pragmatic default.
