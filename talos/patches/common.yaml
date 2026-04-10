@@ -1,0 +1,17 @@
+---
+cluster:
+  clusterName: eck-cluster
+  allowSchedulingOnControlPlanes: true
+  network:
+    dnsDomain: cluster.local
+
+machine:
+  kubelet:
+    extraMounts:
+      - destination: /var/mnt/data
+        type: bind
+        source: /var/mnt/data
+        options:
+          - bind
+          - rshared
+          - rw

@@ -1,0 +1,41 @@
+---
+# Two namespaces for the install:
+#
+#   elastic-system   the ECK operator lives here
+#   elastic-stack    your data-plane (Elasticsearch, Kibana, Fleet Server,
+#                    Elastic Agent) lives here
+#
+# Both namespaces carry the Pod Security Standards "privileged" label.
+# Kubernetes enforces Pod Security Standards namespace-by-namespace
+# (https://kubernetes.io/docs/concepts/security/pod-security-admission/)
+# and the default is "baseline", which BLOCKS the things ECK legitimately
+# needs:
+#   - privileged init containers for the vm.max_map_count sysctl
+#   - hostPath volumes for the Elastic Agent DaemonSet (container logs,
+#     container runtime state) and Fleet Server state cache
+#   - runAsUser: 0 for the init container
+#
+# The "privileged" label opts this namespace out of the default policy so
+# those patterns are allowed. This is NOT a Cilium or Talos specific
+# thing — it's Kubernetes Pod Security Admission, which Talos enables out
+# of the box. Without the label, your ECK pods get rejected with
+# "violates PodSecurity" errors. See the ECK security context docs:
+#   https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-security-context.html
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: elastic-system
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: elastic-stack
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged

@@ -1,0 +1,125 @@
+---
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: arc-runner-eck-on-talos
+    outputs:
+      yaml: ${{ steps.filter.outputs.yaml }}
+      k8s: ${{ steps.filter.outputs.k8s }}
+      md: ${{ steps.filter.outputs.md }}
+      helm: ${{ steps.filter.outputs.helm }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            yaml:
+              - '**/*.yaml'
+              - '**/*.yml'
+              - '.yamllint.yml'
+            k8s:
+              - 'kubernetes/**'
+            md:
+              - '**/*.md'
+            helm:
+              - 'kubernetes/eck-operator/**'
+              - 'kubernetes/eck-stack/**'
+
+  yamllint:
+    needs: changes
+    if: needs.changes.outputs.yaml == 'true'
+    runs-on: arc-runner-eck-on-talos
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yamllint
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends yamllint
+      - name: Lint
+        run: yamllint -c .yamllint.yml talos/ kubernetes/ .github/
+
+  kubeconform:
+    needs: changes
+    if: needs.changes.outputs.k8s == 'true'
+    runs-on: arc-runner-eck-on-talos
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kubeconform
+        run: |
+          cd "$(mktemp -d)"
+          wget -q https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz
+          tar -xzf kubeconform-linux-amd64.tar.gz
+          install -m 0755 kubeconform "$HOME/.local/bin/kubeconform"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Validate manifests
+        run: |
+          kubeconform -strict -ignore-missing-schemas \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            kubernetes/namespaces.yaml kubernetes/storage/
+
+  helm-lint:
+    needs: changes
+    if: needs.changes.outputs.helm == 'true'
+    runs-on: arc-runner-eck-on-talos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Render eck-operator values
+        run: |
+          helm repo add elastic https://helm.elastic.co
+          helm repo update
+          helm template eck-operator elastic/eck-operator \
+            --version 3.3.1 \
+            --namespace elastic-system \
+            --values kubernetes/eck-operator/values.yaml > /dev/null
+      - name: Render eck-stack values
+        run: |
+          helm template eck-stack elastic/eck-stack \
+            --version 0.18.1 \
+            --namespace elastic-stack \
+            --values kubernetes/eck-stack/values.yaml > /dev/null
+
+  markdownlint:
+    needs: changes
+    if: needs.changes.outputs.md == 'true'
+    runs-on: arc-runner-eck-on-talos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Lint
+        run: npx --yes markdownlint-cli2 "**/*.md" "#node_modules"
+
+  validation:
+    needs: [changes, yamllint, kubeconform, helm-lint, markdownlint]
+    if: always()
+    runs-on: arc-runner-eck-on-talos
+    steps:
+      - name: Aggregate
+        run: |
+          echo "yamllint: ${{ needs.yamllint.result }}"
+          echo "kubeconform: ${{ needs.kubeconform.result }}"
+          echo "helm-lint: ${{ needs.helm-lint.result }}"
+          echo "markdownlint: ${{ needs.markdownlint.result }}"
+          if [[ "${{ needs.yamllint.result }}" == "failure" || \
+                "${{ needs.kubeconform.result }}" == "failure" || \
+                "${{ needs.helm-lint.result }}" == "failure" || \
+                "${{ needs.markdownlint.result }}" == "failure" ]]; then
+            echo "::error::One or more validation jobs failed"
+            exit 1
+          fi
+          echo "All validation jobs passed or were skipped"

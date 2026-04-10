@@ -1,0 +1,28 @@
+---
+machine:
+  install:
+    disk: /dev/sda
+  network:
+    hostname: node3
+    nameservers:
+      - 1.1.1.1
+      - 8.8.8.8
+    interfaces:
+      - interface: eth0
+        addresses:
+          - 10.0.0.13/24
+        routes:
+          - network: 0.0.0.0/0
+            gateway: 10.0.0.1
+
+---
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: data
+provisioning:
+  diskSelector:
+    match: "!system_disk"
+  minSize: 10GiB
+  maxSize: 10TiB
+filesystem:
+  type: ext4

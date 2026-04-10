@@ -1,0 +1,11 @@
+.claude/
+
+ca.key
+ca.crt
+*.pem
+secrets-encryption-keys.yaml
+kubeconfig
+talosconfig
+*.tfplan
+.terraform/
+.DS_Store

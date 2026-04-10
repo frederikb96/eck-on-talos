@@ -1,0 +1,71 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "Europe/Berlin",
+  "schedule": ["* * * * 6"],
+  "prConcurrentLimit": 0,
+  "prHourlyLimit": 0,
+  "branchConcurrentLimit": 0,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  },
+  "osvVulnerabilityAlerts": true,
+  "labels": ["dependencies", "renovate"],
+  "packageRules": [
+    {
+      "description": "Patch updates: no delay",
+      "matchUpdateTypes": ["patch"],
+      "automerge": false,
+      "minimumReleaseAge": "0 days"
+    },
+    {
+      "description": "Minor updates: 14-day stability window",
+      "matchUpdateTypes": ["minor"],
+      "automerge": false,
+      "minimumReleaseAge": "14 days"
+    },
+    {
+      "description": "Major updates: 30-day stability window",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "minimumReleaseAge": "30 days"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Elastic Stack version in eck-stack Helm values",
+      "managerFilePatterns": ["/^kubernetes/eck-stack/values\\.yaml$/"],
+      "matchStrings": ["version:\\s+(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\\s+#\\s+managed by renovate"],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "docker.elastic.co/elasticsearch/elasticsearch"
+    },
+    {
+      "customType": "regex",
+      "description": "eck-operator Helm chart version in README install command",
+      "managerFilePatterns": ["/^README\\.md$/"],
+      "matchStrings": ["eck-operator\\s+--version\\s+(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"],
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://helm.elastic.co",
+      "depNameTemplate": "eck-operator"
+    },
+    {
+      "customType": "regex",
+      "description": "eck-stack Helm chart version in README install command",
+      "managerFilePatterns": ["/^README\\.md$/"],
+      "matchStrings": ["eck-stack\\s+--version\\s+(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"],
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://helm.elastic.co",
+      "depNameTemplate": "eck-stack"
+    },
+    {
+      "customType": "regex",
+      "description": "Talos version in README",
+      "managerFilePatterns": ["/^README\\.md$/"],
+      "matchStrings": ["talos_version\\s*=\\s*\"(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)\""],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "siderolabs/talos"
+    }
+  ]
+}

@@ -1,0 +1,755 @@
+# =============================================================================
+# eck-stack Helm values — the complete Elastic Stack for this guide
+# =============================================================================
+#
+# This file is a single Helm values file that the `eck-stack` umbrella chart
+# fans out into four Elastic custom resources:
+#
+#   eck-elasticsearch   → kind: Elasticsearch (a 3-node StatefulSet)
+#   eck-kibana          → kind: Kibana        (2 replicas, Deployment)
+#   eck-fleet-server    → kind: Agent (Fleet Server mode, 2 replicas)
+#   eck-agent           → kind: Agent (Fleet mode, DaemonSet)
+#
+# All four are declarative. You change a field here, run `helm upgrade`,
+# and the ECK operator reconciles the cluster state. No `kubectl edit`,
+# no manual rolling restarts, no certificate renewal ceremonies.
+#
+# Chart reference:
+#   https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-install-helm.html
+#
+# IMPORTANT: PLACEHOLDERS you must replace before deploying (search & replace):
+#   10.0.0.11         → your node1 IP
+#   10.0.0.12         → your node2 IP
+#   10.0.0.13         → your node3 IP
+#   elastic.lan       → your DNS name for Elasticsearch (or delete the entry)
+#   kibana.lan        → your DNS name for Kibana (or delete the entry)
+#   fleet.lan         → your DNS name for Fleet Server (or delete the entry)
+#
+# These end up as SubjectAltName (SAN) entries on the TLS certificates ECK
+# signs with your internal CA. If they don't match the hostname your clients
+# use, TLS validation will fail.
+# =============================================================================
+
+---
+# =============================================================================
+# ELASTICSEARCH — the 3-node StatefulSet storing all your data
+# =============================================================================
+eck-elasticsearch:
+  # The Elastic Stack version. "# managed by renovate" tells Renovate bot to
+  # bump this automatically when a new Elastic version is published. The four
+  # version fields (ES, Kibana, Fleet Server, Agent) MUST stay in sync.
+  version: 9.3.2 # managed by renovate
+  enabled: true
+
+  # Force the resulting Elasticsearch resource to be named "elasticsearch"
+  # instead of whatever Helm would auto-generate. Every other ref in this file
+  # uses "name: elasticsearch" to point at it, so this must stay set.
+  fullnameOverride: elasticsearch
+
+  # -------------------------------------------------------------------------
+  # Stack Monitoring (self-monitoring)
+  # -------------------------------------------------------------------------
+  # ECK deploys a Metricbeat + Filebeat sidecar in each ES pod that ships
+  # metrics and logs to ANOTHER Elasticsearch cluster. Here we point it at
+  # ourselves (elasticsearchRefs: name: elasticsearch), which is "self
+  # monitoring". The official Elastic recommendation is a dedicated
+  # monitoring cluster, but for a small single-cluster deployment this is
+  # the pragmatic choice: zero extra infrastructure, still get the full
+  # Stack Monitoring UI in Kibana.
+  #
+  # Docs: https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-stack-monitoring.html
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+        - name: elasticsearch
+    logs:
+      elasticsearchRefs:
+        - name: elasticsearch
+
+  # -------------------------------------------------------------------------
+  # HTTP layer: NodePort + TLS with your internal CA
+  # -------------------------------------------------------------------------
+  http:
+    # Override the default ClusterIP service with a NodePort. NodePort means
+    # every node in the cluster listens on port 30920 and forwards to the
+    # Elasticsearch pods. Clients on the LAN can hit ANY node's IP and reach
+    # the service, giving you de-facto HA with zero extra components.
+    #
+    # If you want a proper LoadBalancer instead (cloud environments), change
+    # type: NodePort to type: LoadBalancer — ECK/Kubernetes does the rest.
+    service:
+      spec:
+        type: NodePort
+        ports:
+          - name: https
+            port: 9200
+            targetPort: 9200
+            nodePort: 30920
+
+    # TLS: "bring your own CA". When we give ECK a Secret containing BOTH
+    # ca.crt AND ca.key, it uses that CA to sign fresh leaf certificates
+    # for every component. One CA → all three services (ES, Kibana, Fleet
+    # Server) serve certs signed by the same authority → clients trust
+    # ONE ca.crt and everything works.
+    #
+    # Docs: https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-tls-certificates.html
+    #
+    # The `eck-ca` Secret is created in Step 8 of the README with:
+    #   kubectl -n elastic-stack create secret generic eck-ca \
+    #     --from-file=ca.crt=ca/ca.crt \
+    #     --from-file=ca.key=ca/ca.key
+    tls:
+      certificate:
+        secretName: eck-ca
+
+      # selfSignedCertificate.subjectAltNames adds custom SANs to the leaf
+      # certificate ECK generates. Because we're supplying a CA (above),
+      # ECK still signs a per-component leaf cert — it just uses YOUR CA
+      # as the signer and merges these SANs into the cert.
+      #
+      # Replace the IPs and DNS names with your actual node addresses.
+      # If a client connects to `https://<ip>:30920/` and that IP is not
+      # in this list, the TLS handshake fails with a hostname mismatch.
+      selfSignedCertificate:
+        subjectAltNames:
+          - ip: 10.0.0.11
+          - ip: 10.0.0.12
+          - ip: 10.0.0.13
+          - dns: elastic.lan
+
+  # -------------------------------------------------------------------------
+  # NodeSets — the actual Elasticsearch processes
+  # -------------------------------------------------------------------------
+  # Elasticsearch node groups in ECK are called "nodeSets". Each nodeSet
+  # becomes a StatefulSet. With count: 3 and one nodeSet, you get 3
+  # Elasticsearch pods, each with its own persistent volume.
+  nodeSets:
+    - name: default
+      count: 3
+
+      config:
+        # node.roles — what each Elasticsearch node does. We give every
+        # node ALL the main roles so the cluster is homogeneous:
+        #   master                - participates in cluster coordination
+        #                           and holds the cluster state
+        #   data                  - stores shards (the actual data)
+        #   ingest                - runs ingest pipelines
+        #   ml                    - runs Machine Learning jobs
+        #   transform             - runs transform jobs
+        #   remote_cluster_client - enables CCR / CCS to other clusters
+        #
+        # Docs: https://www.elastic.co/guide/en/elasticsearch/reference/current/node-roles-overview.html
+        #
+        # This is the right setup for a small cluster. If you grow past
+        # ~7 data nodes, split out dedicated master nodes.
+        node.roles: ["master", "data", "ingest", "ml", "transform", "remote_cluster_client"]
+
+        # Turn OFF the legacy Elasticsearch self-monitoring collector —
+        # we use Metricbeat-based stack monitoring (configured above via
+        # spec.monitoring) instead. If both were on you'd get duplicate
+        # metrics. Setting this false is the official recommendation when
+        # using Metricbeat monitoring.
+        xpack.monitoring.collection.enabled: false
+
+        # -------------------------------------------------------------------
+        # Audit logging — who touched what
+        # -------------------------------------------------------------------
+        # Elasticsearch audit logs record authentication attempts, failed
+        # accesses, configuration changes. They land in a separate log
+        # stream inside Elasticsearch and are queryable from Kibana.
+        #
+        # Docs: https://www.elastic.co/guide/en/elasticsearch/reference/current/audit-event-types.html
+        #
+        # Keep audit logging ON for any cluster that holds production
+        # data — it's small, cheap and invaluable during incident response.
+        xpack.security.audit.enabled: true
+
+        # The full audit event list is verbose. We include the ones that
+        # matter for security incidents and skip "access_granted" which
+        # floods the log on a busy cluster.
+        xpack.security.audit.logfile.events.include:
+          - access_denied
+          - anonymous_access_denied
+          - authentication_failed
+          - connection_denied
+          - tampered_request
+          - run_as_denied
+          - run_as_granted
+          - security_config_change
+
+      podTemplate:
+        spec:
+          # -----------------------------------------------------------------
+          # Pod anti-affinity: one ES pod per node
+          # -----------------------------------------------------------------
+          # requiredDuringSchedulingIgnoredDuringExecution with
+          # topologyKey: kubernetes.io/hostname enforces that NO TWO
+          # Elasticsearch pods can ever schedule on the same Kubernetes
+          # node. With count: 3 on a 3-node cluster, that means exactly
+          # one ES pod per node.
+          #
+          # Docs: https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-advanced-node-scheduling.html
+          #
+          # Combined with the local PVs pinned to hostnames (see
+          # kubernetes/storage/pvs.yaml), this gives us true data locality:
+          # each ES pod lives on the same node as its on-disk data.
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      common.k8s.elastic.co/type: elasticsearch
+                  topologyKey: kubernetes.io/hostname
+
+          # fsGroup: 1000 tells the kubelet to chown the mounted PVC to
+          # GID 1000, which is the GID Elasticsearch runs as inside the
+          # container. Without this, the first container boot fails with
+          # "permission denied" on the data directory.
+          securityContext:
+            fsGroup: 1000
+
+          # -----------------------------------------------------------------
+          # Init container: raise vm.max_map_count
+          # -----------------------------------------------------------------
+          # Elasticsearch uses memory-mapped files (mmap) heavily for its
+          # Lucene segments. The Linux default of 65530 memory maps is
+          # way too small — ES will fail to start with a
+          # "max virtual memory areas vm.max_map_count [65530] is too low"
+          # error. The kernel supports up to 262144 on most modern systems.
+          #
+          # Docs: https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-virtual-memory.html
+          #
+          # We fix it with a privileged init container that runs sysctl
+          # once before the main container starts. This is a standard ECK
+          # pattern. The init container is `runAsUser: 0` + privileged
+          # because only root can write to /proc/sys/vm/max_map_count, and
+          # this is WHY the elastic-stack namespace needs the privileged
+          # Pod Security Standards label.
+          initContainers:
+            - name: sysctl
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
+
+          containers:
+            - name: elasticsearch
+
+              # JVM heap size. The rule of thumb for Elasticsearch is:
+              #   heap = 50% of container memory, up to ~30 GB max
+              # (the ~30 GB upper bound exists because beyond that the
+              # JVM can no longer use compressed ordinary object pointers,
+              # which wastes memory — not relevant for us).
+              #
+              # With 8 GiB container memory (see resources below) we set
+              # heap to 4 GiB. The other 4 GiB are used by Lucene's
+              # off-heap file cache, Netty buffers, direct memory, etc.
+              #
+              # Docs: https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-managing-compute-resources.html
+              env:
+                - name: ES_JAVA_OPTS
+                  value: "-Xms4g -Xmx4g"
+
+              # ----------------------------------------------------------
+              # Resources: request == limit (ES is special)
+              # ----------------------------------------------------------
+              # For MOST workloads you set requests (floor) and leave
+              # limits unset so the pod can burst. Elasticsearch is
+              # DIFFERENT:
+              #
+              #   - The JVM heap is pre-allocated at startup
+              #     (-Xms4g = allocate 4 GiB immediately, don't grow).
+              #   - Lucene's file cache expects stable, predictable
+              #     off-heap memory. If the kernel reclaims memory under
+              #     pressure, ES performance collapses.
+              #   - Memory overcommit + OOM killer can silently kill the
+              #     JVM, which is catastrophic for a stateful database.
+              #
+              # So: set request == limit. Kubernetes treats the pod as
+              # "guaranteed" QoS, reserves that exact amount of memory
+              # for it, and the kernel won't reclaim it under pressure.
+              #
+              # Sizing guide for a 16 GiB VM:
+              #   - ES:           8 GiB (4 GiB heap + 4 GiB off-heap)
+              #   - Kibana:       2 GiB (only on 2 of 3 nodes)
+              #   - Fleet Server: 2 GiB (only on 2 of 3 nodes)
+              #   - Agent DS:     2 GiB (on every node)
+              #   - OS + kubelet: ~2 GiB
+              #   ≈ 14 GiB peak per node, 2 GiB headroom. Fits.
+              #
+              # If your VMs have 32 GiB, bump ES memory to 16 GiB and
+              # ES_JAVA_OPTS to -Xms8g -Xmx8g for ~2x the headroom.
+              resources:
+                requests:
+                  cpu: 500m
+                  memory: 8Gi
+                limits:
+                  memory: 8Gi
+
+      # ---------------------------------------------------------------------
+      # Persistent storage — bind to the local PVs we pre-created
+      # ---------------------------------------------------------------------
+      # volumeClaimTemplates works like a StatefulSet's volumeClaimTemplates:
+      # each of the 3 ES pods gets its own PVC named
+      # "elasticsearch-data-elasticsearch-es-default-<N>". The PVCs request
+      # 100 GiB from the `local-storage` StorageClass, which is a
+      # no-provisioner class — so the PVCs can only bind to one of the
+      # three PVs we pre-created in kubernetes/storage/pvs.yaml.
+      #
+      # Each of those PVs has a nodeAffinity pinning it to a specific node
+      # (node1/node2/node3), so the scheduler places each ES pod on the
+      # node that holds its PV's data directory — automatic data locality.
+      #
+      # Docs: https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-volume-claim-templates.html
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 100Gi
+            storageClassName: local-storage
+
+---
+# =============================================================================
+# KIBANA — the web UI and Fleet control plane
+# =============================================================================
+eck-kibana:
+  version: 9.3.2 # managed by renovate
+  enabled: true
+  fullnameOverride: kibana
+
+  # Two Kibana replicas. With the podAntiAffinity below they land on two
+  # of the three nodes. Two replicas is enough: Kibana is stateless, and
+  # if one pod dies the other keeps serving.
+  count: 2
+
+  # Point Kibana at our Elasticsearch (same name as fullnameOverride in
+  # the eck-elasticsearch section above). ECK auto-generates a kibana_system
+  # user, TLS trust and a service account for this link.
+  elasticsearchRef:
+    name: elasticsearch
+
+  # Same self-monitoring pattern as Elasticsearch: Kibana ships its own
+  # metrics and logs back into the cluster it's serving.
+  monitoring:
+    metrics:
+      elasticsearchRefs:
+        - name: elasticsearch
+    logs:
+      elasticsearchRefs:
+        - name: elasticsearch
+
+  http:
+    # NodePort 30601 — Kibana's native port is 5601. Access via any node IP.
+    service:
+      spec:
+        type: NodePort
+        ports:
+          - name: https
+            port: 5601
+            targetPort: 5601
+            nodePort: 30601
+
+    # Same BYO CA pattern as Elasticsearch. Clients that trust ca.crt will
+    # also trust Kibana's cert, since ECK signs it with the same CA.
+    tls:
+      certificate:
+        secretName: eck-ca
+      selfSignedCertificate:
+        subjectAltNames:
+          - ip: 10.0.0.11
+          - ip: 10.0.0.12
+          - ip: 10.0.0.13
+          - dns: kibana.lan
+
+  # -------------------------------------------------------------------------
+  # Kibana configuration (kibana.yml)
+  # -------------------------------------------------------------------------
+  config:
+    # Allow Kibana to show Cross-Cluster Search monitoring data. Harmless
+    # if you don't use CCS.
+    monitoring.ui.ccs.enabled: true
+
+    # -----------------------------------------------------------------------
+    # Kibana audit logging
+    # -----------------------------------------------------------------------
+    # Mirrors the Elasticsearch audit log at the Kibana API layer.
+    # Records logins, saved-object mutations, permission denials etc.
+    #
+    # Docs: https://www.elastic.co/guide/en/kibana/current/xpack-security-audit-logging.html
+    #
+    # ignore_filters removes noise: http_request events (every page click
+    # is a request), database reads (noisy), and the built-in service
+    # accounts. What remains is the actually interesting stuff.
+    xpack.security.audit.enabled: true
+    xpack.security.audit.ignore_filters:
+      - actions: [http_request]
+      - categories: [database]
+      - users: [elastic, kibana_system]
+
+    # -----------------------------------------------------------------------
+    # Kibana Fleet preconfiguration — wire up Fleet Server + Agent policies
+    # -----------------------------------------------------------------------
+    # Kibana hosts the Fleet control plane. Everything Fleet knows about
+    # (outputs, Fleet Server hosts, agent policies, integrations) can be
+    # DECLARED in kibana.yml so Fleet boots with a working config.
+    #
+    # Docs: https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-elastic-agent-fleet-configuration.html
+    #
+    # Without this block, Fleet starts empty and every policy has to be
+    # clicked together in the Kibana UI. With this block, it's declarative.
+
+    # Output: where agents send their data. Here we point at the in-cluster
+    # Elasticsearch service. External agents would need a different hostname
+    # if Kibana advertised this output to them — but since every agent we
+    # enroll in this cluster runs inside Kubernetes, the .svc DNS name works.
+    xpack.fleet.outputs:
+      - id: kubernetes-es
+        name: Kubernetes ES
+        type: elasticsearch
+        hosts: ["https://elasticsearch-es-http.elastic-stack.svc:9200"]
+        is_default: true
+        is_default_monitoring: true
+
+    # Fleet Server host: where agents enroll. Again, in-cluster DNS. For
+    # external agent enrollment the customer connects via NodePort — but
+    # the initial policy's host_urls field only matters for in-cluster
+    # agents. External agents are told the Fleet Server URL explicitly
+    # at enrollment time via the `--url=...` flag.
+    xpack.fleet.fleetServerHosts:
+      - id: kubernetes-fleet
+        name: Kubernetes Fleet
+        host_urls: ["https://fleet-server-agent-http.elastic-stack.svc:8220"]
+        is_default: true
+
+    # Integration packages Kibana should install on startup. These become
+    # available in the Fleet "Integrations" catalogue so agent policies
+    # can reference them.
+    xpack.fleet.packages:
+      - name: system        # host-level metrics + logs (CPU, memory, disk)
+        version: latest
+      - name: elastic_agent # the agent's own self-telemetry
+        version: latest
+      - name: fleet_server  # the Fleet Server integration
+        version: latest
+      - name: kubernetes    # k8s cluster observability (pods, nodes, containers)
+        version: latest
+
+    # Pre-create two agent policies:
+    #
+    #   eck-fleet-server → the Fleet Server pods themselves use this policy
+    #   eck-agent        → the DaemonSet agents use this policy and collect
+    #                      host + Kubernetes metrics
+    #
+    # The IDs here (eck-fleet-server / eck-agent) are referenced from the
+    # Agent CRs further down via policyID:
+    xpack.fleet.agentPolicies:
+      - name: Fleet Server on ECK policy
+        id: eck-fleet-server
+        data_output_id: kubernetes-es
+        monitoring_output_id: kubernetes-es
+        fleet_server_host_id: kubernetes-fleet
+        namespace: default
+        is_managed: true
+        is_default_fleet_server: true
+        monitoring_enabled: [logs, metrics]
+        unenroll_timeout: 900
+        package_policies:
+          - name: fleet_server-1
+            id: fleet_server-1
+            package:
+              name: fleet_server
+
+      - name: Elastic Agent on ECK policy
+        id: eck-agent
+        data_output_id: kubernetes-es
+        monitoring_output_id: kubernetes-es
+        fleet_server_host_id: kubernetes-fleet
+        namespace: default
+        monitoring_enabled: [logs, metrics]
+        unenroll_timeout: 900
+        is_managed: false
+        package_policies:
+          - name: system-1
+            package:
+              name: system
+          - name: kubernetes-1
+            package:
+              name: kubernetes
+
+  # -------------------------------------------------------------------------
+  # Kibana podTemplate — anti-affinity + resources
+  # -------------------------------------------------------------------------
+  podTemplate:
+    spec:
+      # Same anti-affinity pattern as Elasticsearch: force the two Kibana
+      # pods onto different nodes so a single node outage can't take both
+      # down. With count: 2 on 3 nodes, that leaves one node free.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  common.k8s.elastic.co/type: kibana
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: kibana
+          # Kibana's memory usage is modest (mostly Node.js) but grows
+          # with the number of concurrent users and saved objects.
+          # 2 GiB limit is comfortable for small teams. Bump to 4 GiB if
+          # you see OOM restarts under load.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 1Gi
+            limits:
+              memory: 2Gi
+
+---
+# =============================================================================
+# FLEET SERVER — the agent control plane, runs as ECK "Agent" with mode: fleet
+# =============================================================================
+eck-fleet-server:
+  version: 9.3.2 # managed by renovate
+  enabled: true
+  fullnameOverride: fleet-server
+
+  # Ties Fleet Server to the Kibana we defined above. Fleet Server reads
+  # its policies from Kibana's Fleet API, so it needs a reference to it.
+  # ECK auto-generates the necessary credentials.
+  kibanaRef:
+    name: kibana
+
+  # Fleet Server also needs direct access to Elasticsearch to write data.
+  elasticsearchRefs:
+    - name: elasticsearch
+
+  # Apply the "eck-fleet-server" agent policy we pre-declared in Kibana
+  # above. This is what makes Fleet Server self-configure on startup.
+  policyID: eck-fleet-server
+
+  http:
+    # NodePort 30822 — Fleet Server's native port is 8220. External
+    # Elastic Agents enroll against https://<node-ip>:30822.
+    service:
+      spec:
+        type: NodePort
+        ports:
+          - name: https
+            port: 8220
+            targetPort: 8220
+            nodePort: 30822
+
+    # Same BYO CA + SANs pattern. External agents trust ca.crt when
+    # enrolling via --certificate-authorities=ca.crt.
+    tls:
+      certificate:
+        secretName: eck-ca
+      selfSignedCertificate:
+        subjectAltNames:
+          - ip: 10.0.0.11
+          - ip: 10.0.0.12
+          - ip: 10.0.0.13
+          - dns: fleet.lan
+
+  deployment:
+    # 2 Fleet Server replicas for HA. Fleet Server is stateless (state
+    # lives in Elasticsearch), so scaling horizontally is trivial.
+    replicas: 2
+    podTemplate:
+      spec:
+        # Fleet Server needs a ServiceAccount to read cluster resources
+        # for its own self-telemetry. ECK auto-creates this — we just
+        # name it here.
+        serviceAccountName: fleet-server
+        automountServiceAccountToken: true
+
+        # Anti-affinity: two replicas on two different nodes.
+        affinity:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    agent.k8s.elastic.co/name: fleet-server
+                topologyKey: kubernetes.io/hostname
+
+        # hostPath volume for agent state cache. This is a local scratch
+        # dir (checkin state, cached policies). If the pod reschedules
+        # to another node, the cache is lost but Fleet Server rebuilds
+        # it from Elasticsearch on startup — so it's safe.
+        volumes:
+          - name: agent-data
+            hostPath:
+              path: /var/lib/elastic-fleet-state
+              type: DirectoryOrCreate
+
+        containers:
+          - name: agent
+            securityContext:
+              runAsUser: 0
+              privileged: true
+            resources:
+              requests:
+                cpu: 50m
+                memory: 512Mi
+              limits:
+                memory: 2Gi
+
+---
+# =============================================================================
+# ELASTIC AGENT DaemonSet — cluster + container observability on every node
+# =============================================================================
+# ECK deploys this as a kind: Agent with mode: fleet and as a DaemonSet,
+# meaning one pod per Kubernetes node. Each pod enrolls itself with Fleet
+# Server using the "eck-agent" policy, which gives it the System and
+# Kubernetes integrations — so you get:
+#
+#   - Host metrics (CPU, memory, disk, network) for each node
+#   - Container metrics and logs from every container on that node
+#   - Kubernetes events, pod state, deployment state, etc.
+#
+# All visible in Kibana under "Observability → Kubernetes".
+#
+# Docs: https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-elastic-agent-fleet.html
+# =============================================================================
+eck-agent:
+  version: 9.3.2 # managed by renovate
+  enabled: true
+
+  # Empty elasticsearchRefs — the agent doesn't talk to ES directly, it
+  # goes through Fleet Server (fleetServerRef below). This is the "fleet"
+  # mode of operation, as opposed to standalone mode where agents write
+  # straight to ES.
+  elasticsearchRefs: []
+
+  kibanaRef:
+    name: kibana
+  fleetServerRef:
+    name: fleet-server
+
+  mode: fleet
+  policyID: eck-agent
+
+  # -------------------------------------------------------------------------
+  # RBAC — what this agent is allowed to read from the Kubernetes API
+  # -------------------------------------------------------------------------
+  # The Kubernetes integration needs to list pods, nodes, namespaces etc.
+  # to produce metrics. ECK creates the ServiceAccount and RoleBinding;
+  # we just specify which rules the ClusterRole should have.
+  #
+  # The rules below are a union of:
+  #   - https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-eck-permissions.html
+  #   - https://github.com/elastic/cloud-on-k8s/blob/main/config/recipes/elastic-agent/kubernetes-integration.yaml
+  #
+  # We intentionally do NOT grant write access to anything — this agent
+  # is read-only observability.
+  clusterRole:
+    name: elastic-agent
+    rules:
+      # Core resources for pod/node/namespace discovery and metrics.
+      - apiGroups: [""]
+        resources: [pods, nodes, namespaces, events, services, configmaps]
+        verbs: [get, watch, list]
+
+      # Leader election for the cluster-scoped state collector. Only one
+      # agent at a time queries kube-state-metrics-style data to avoid
+      # duplicates; the rest wait via a Lease object.
+      - apiGroups: ["coordination.k8s.io"]
+        resources: [leases]
+        verbs: [get, create, update]
+
+      # Per-node stats (CPU, memory, network) served by kubelet.
+      - apiGroups: [""]
+        resources: [nodes/stats]
+        verbs: [get]
+
+      # /metrics endpoint on kubelet itself.
+      - nonResourceURLs: ["/metrics"]
+        verbs: [get]
+
+      # Workload state (deployments, statefulsets, etc.) — powers the
+      # Kubernetes workload dashboards in Kibana.
+      - apiGroups: ["apps"]
+        resources: [statefulsets, deployments, replicasets, daemonsets]
+        verbs: [get, list, watch]
+
+      # Legacy extensions API (still needed on some Kubernetes versions
+      # for ReplicaSets).
+      - apiGroups: ["extensions"]
+        resources: [replicasets]
+        verbs: [get, list, watch]
+
+      # Jobs + CronJobs for batch workload monitoring.
+      - apiGroups: ["batch"]
+        resources: [jobs, cronjobs]
+        verbs: [get, list, watch]
+
+      # StorageClass info (used by the Kubernetes integration to tag
+      # volumes with their storage class).
+      - apiGroups: ["storage.k8s.io"]
+        resources: [storageclasses]
+        verbs: [get, list, watch]
+
+      # PV / PVC info for volume observability.
+      - apiGroups: [""]
+        resources: [persistentvolumes, persistentvolumeclaims]
+        verbs: [get, list, watch]
+
+  # -------------------------------------------------------------------------
+  # DaemonSet podTemplate
+  # -------------------------------------------------------------------------
+  daemonSet:
+    podTemplate:
+      spec:
+        # Service account matches the ClusterRole above.
+        serviceAccountName: elastic-agent
+        automountServiceAccountToken: true
+
+        # hostNetwork: true so the agent can scrape the kubelet on the
+        # node's real IP. dnsPolicy must be ClusterFirstWithHostNet when
+        # you share the host network but still want cluster DNS.
+        hostNetwork: true
+        dnsPolicy: ClusterFirstWithHostNet
+
+        # hostPath volumes — the agent needs to read container logs and
+        # the container runtime state directly from the node filesystem.
+        # These are standard for any DaemonSet doing log collection.
+        volumes:
+          - name: agent-data
+            hostPath:
+              path: /var/lib/elastic-agent-state
+              type: DirectoryOrCreate
+          - name: varlogcontainers
+            hostPath:
+              path: /var/log/containers
+              type: Directory
+          - name: varlibcontainerd
+            hostPath:
+              path: /var/lib/containerd
+              type: Directory
+
+        containers:
+          - name: agent
+            # runAsUser: 0 + privileged are required to read container
+            # logs and access the container runtime socket. This is why
+            # the elastic-stack namespace needs the privileged Pod
+            # Security Standards label.
+            securityContext:
+              runAsUser: 0
+              privileged: true
+            volumeMounts:
+              - name: varlogcontainers
+                mountPath: /var/log/containers
+                readOnly: true
+              - name: varlibcontainerd
+                mountPath: /var/lib/containerd
+                readOnly: true
+            resources:
+              requests:
+                cpu: 100m
+                memory: 512Mi
+              limits:
+                memory: 2Gi

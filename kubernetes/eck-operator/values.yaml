@@ -1,0 +1,19 @@
+---
+# Values for the ECK operator Helm chart.
+# The operator is a single Deployment (elastic-operator) that watches
+# Elasticsearch, Kibana, Agent and Fleet Server custom resources and
+# reconciles them into real StatefulSets / Deployments / Services / Secrets.
+#
+# Full chart values reference:
+#   https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-install-helm.html
+#
+# We only override resource requests here and deliberately DO NOT set
+# memory limits. The operator is a reconciler — its memory footprint grows
+# briefly during bulk events (e.g. rolling the whole stack) and a hard
+# limit could OOM-kill it in the middle of a reconciliation. Leaving the
+# limit unset lets it burst as needed; the request still reserves enough
+# for steady-state scheduling.
+resources:
+  requests:
+    cpu: 10m
+    memory: 150Mi
