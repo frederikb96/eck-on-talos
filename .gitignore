@@ -9,3 +9,5 @@ talosconfig
 *.tfplan
 .terraform/
 .DS_Store
+
+_out/
