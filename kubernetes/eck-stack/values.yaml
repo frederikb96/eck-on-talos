@@ -234,54 +234,33 @@ eck-elasticsearch:
 
           containers:
             - name: elasticsearch
-
-              # JVM heap size. The rule of thumb for Elasticsearch is:
-              #   heap = 50% of container memory, up to ~30 GB max
-              # (the ~30 GB upper bound exists because beyond that the
-              # JVM can no longer use compressed ordinary object pointers,
-              # which wastes memory — not relevant for us).
-              #
-              # With 8 GiB container memory (see resources below) we set
-              # heap to 4 GiB. The other 4 GiB are used by Lucene's
-              # off-heap file cache, Netty buffers, direct memory, etc.
+              # --------------------------------------------------------
+              # Resources — Elasticsearch is special: request == limit
+              # --------------------------------------------------------
+              # For most workloads you set a request (floor) and leave
+              # the limit unset so the pod can burst. Elasticsearch is
+              # DIFFERENT. The JVM pre-allocates its heap at startup,
+              # Lucene's off-heap file cache needs stable memory, and
+              # the OOM killer must never touch the JVM. Solution:
+              # request == limit → Kubernetes gives the pod "Guaranteed"
+              # QoS and reserves that exact amount, safe from reclaim.
               #
               # Docs: https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-managing-compute-resources.html
-              env:
-                - name: ES_JAVA_OPTS
-                  value: "-Xms4g -Xmx4g"
-
-              # ----------------------------------------------------------
-              # Resources: request == limit (ES is special)
-              # ----------------------------------------------------------
-              # For MOST workloads you set requests (floor) and leave
-              # limits unset so the pod can burst. Elasticsearch is
-              # DIFFERENT:
               #
-              #   - The JVM heap is pre-allocated at startup
-              #     (-Xms4g = allocate 4 GiB immediately, don't grow).
-              #   - Lucene's file cache expects stable, predictable
-              #     off-heap memory. If the kernel reclaims memory under
-              #     pressure, ES performance collapses.
-              #   - Memory overcommit + OOM killer can silently kill the
-              #     JVM, which is catastrophic for a stateful database.
+              # We do NOT set ES_JAVA_OPTS here. Starting with ES 7.11
+              # the Elasticsearch container auto-sizes the JVM heap from
+              # its own cgroup memory limit (roughly 50% of the limit,
+              # with an upper bound around 30 GiB due to compressed oops).
+              # That means: set resources.limits.memory here → heap is
+              # sized correctly, no env var needed. One less moving part.
               #
-              # So: set request == limit. Kubernetes treats the pod as
-              # "guaranteed" QoS, reserves that exact amount of memory
-              # for it, and the kernel won't reclaim it under pressure.
-              #
-              # Sizing guide for a 16 GiB VM:
-              #   - ES:           8 GiB (4 GiB heap + 4 GiB off-heap)
-              #   - Kibana:       2 GiB (only on 2 of 3 nodes)
-              #   - Fleet Server: 2 GiB (only on 2 of 3 nodes)
-              #   - Agent DS:     2 GiB (on every node)
-              #   - OS + kubelet: ~2 GiB
-              #   ≈ 14 GiB peak per node, 2 GiB headroom. Fits.
-              #
-              # If your VMs have 32 GiB, bump ES memory to 16 GiB and
-              # ES_JAVA_OPTS to -Xms8g -Xmx8g for ~2x the headroom.
+              # Sizing: 8 GiB is the default for a 16 GiB VM. See the
+              # "Sizing your VMs" section in README.md for bigger nodes.
+              # CPU is intentionally low — ES idles at nearly 0 millicore
+              # and bursts freely without a limit.
               resources:
                 requests:
-                  cpu: 500m
+                  cpu: 100m
                   memory: 8Gi
                 limits:
                   memory: 8Gi
@@ -402,27 +381,58 @@ eck-kibana:
     # Without this block, Fleet starts empty and every policy has to be
     # clicked together in the Kibana UI. With this block, it's declarative.
 
-    # Output: where agents send their data. Here we point at the in-cluster
-    # Elasticsearch service. External agents would need a different hostname
-    # if Kibana advertised this output to them — but since every agent we
-    # enroll in this cluster runs inside Kubernetes, the .svc DNS name works.
+    # -----------------------------------------------------------------
+    # Fleet outputs — TWO of them, for two very different audiences
+    # -----------------------------------------------------------------
+    # We declare two Elasticsearch outputs side by side:
+    #
+    #   kubernetes-es  → points at the IN-CLUSTER .svc DNS name.
+    #                    Used by in-cluster agents (the Fleet Server
+    #                    pods and the Elastic Agent DaemonSet). The
+    #                    in-cluster DNS name is short, stable and
+    #                    unchanged across node reboots — perfect for
+    #                    anything inside the cluster.
+    #
+    #   external-es    → points at https://elastic.lan:30920 (the
+    #                    NodePort address for Elasticsearch).
+    #                    Marked `is_default: true` so when a new agent
+    #                    is enrolled from the Kibana UI with no output
+    #                    override, Kibana hands it THIS output.
+    #                    External agents running OUTSIDE the cluster
+    #                    (on laptops, other servers, other VMs) can
+    #                    reach this but cannot reach the in-cluster
+    #                    .svc DNS.
+    #
+    # "elastic.lan" is a placeholder you replace with a DNS name that
+    # points at any one of your node IPs (or at a load balancer
+    # distributing across all three). You can also replace it with a
+    # raw IP, e.g. https://10.0.0.11:30920, but a DNS name is nicer
+    # because it survives IP changes. Whatever you pick MUST be in the
+    # subjectAltNames list of the Elasticsearch CR above.
     xpack.fleet.outputs:
       - id: kubernetes-es
-        name: Kubernetes ES
+        name: Kubernetes ES (in-cluster)
         type: elasticsearch
         hosts: ["https://elasticsearch-es-http.elastic-stack.svc:9200"]
+      - id: external-es
+        name: External ES (NodePort)
+        type: elasticsearch
+        hosts: ["https://elastic.lan:30920"]
         is_default: true
         is_default_monitoring: true
 
-    # Fleet Server host: where agents enroll. Again, in-cluster DNS. For
-    # external agent enrollment the customer connects via NodePort — but
-    # the initial policy's host_urls field only matters for in-cluster
-    # agents. External agents are told the Fleet Server URL explicitly
-    # at enrollment time via the `--url=...` flag.
+    # Same pattern for Fleet Server: one Fleet Server host entry for
+    # in-cluster agents (.svc DNS), one for external agents (NodePort
+    # on a replaceable DNS name). The external one is marked as the
+    # default so new agents enrolled from the Kibana UI receive the
+    # NodePort URL by default.
     xpack.fleet.fleetServerHosts:
       - id: kubernetes-fleet
-        name: Kubernetes Fleet
+        name: Kubernetes Fleet (in-cluster)
         host_urls: ["https://fleet-server-agent-http.elastic-stack.svc:8220"]
+      - id: external-fleet
+        name: External Fleet (NodePort)
+        host_urls: ["https://fleet.lan:30822"]
         is_default: true
 
     # Integration packages Kibana should install on startup. These become
@@ -497,16 +507,20 @@ eck-kibana:
               topologyKey: kubernetes.io/hostname
       containers:
         - name: kibana
-          # Kibana's memory usage is modest (mostly Node.js) but grows
-          # with the number of concurrent users and saved objects.
-          # 2 GiB limit is comfortable for small teams. Bump to 4 GiB if
-          # you see OOM restarts under load.
+          # No memory limit on Kibana. The request (1 GiB) is enough
+          # for a small team; if Kibana ever needs more (big saved-object
+          # migration, many concurrent users) it can burst freely into
+          # whatever memory the node has spare. An unlimited pod will
+          # never be OOM-killed before cgroup limits kick in — and we
+          # don't have cgroup limits set here, on purpose.
+          #
+          # CPU request is deliberately tiny: Kibana idles at near-zero
+          # CPU, only spikes when someone actually loads a dashboard.
+          # No CPU limit either — let it burst.
           resources:
             requests:
-              cpu: 100m
+              cpu: 10m
               memory: 1Gi
-            limits:
-              memory: 2Gi
 
 ---
 # =============================================================================
@@ -591,12 +605,14 @@ eck-fleet-server:
             securityContext:
               runAsUser: 0
               privileged: true
+            # Same philosophy as Kibana: low request, no limit. Fleet
+            # Server is stateless and lightweight — it mostly shuttles
+            # agent check-ins between agents and Elasticsearch. Bursts
+            # happen during mass enrollments.
             resources:
               requests:
-                cpu: 50m
-                memory: 512Mi
-              limits:
-                memory: 2Gi
+                cpu: 10m
+                memory: 1Gi
 
 ---
 # =============================================================================
@@ -747,9 +763,13 @@ eck-agent:
               - name: varlibcontainerd
                 mountPath: /var/lib/containerd
                 readOnly: true
+            # No memory limit on the agent. Log collection can spike
+            # when a chatty container dumps logs in a burst — a hard
+            # limit would just OOM-kill the agent and lose lines.
+            # Request 1 GiB for the steady-state footprint, let it
+            # burst. Very low CPU request (10m) because the agent
+            # idles when nothing is happening.
             resources:
               requests:
-                cpu: 100m
-                memory: 512Mi
-              limits:
-                memory: 2Gi
+                cpu: 10m
+                memory: 1Gi

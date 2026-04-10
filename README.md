@@ -1,9 +1,15 @@
+<p align="center">
+  <img src="assets/icon.png" alt="eck-on-talos" width="180">
+</p>
+
 # ECK on Talos
 
 [![CI](https://github.com/frederikb96/eck-on-talos/actions/workflows/ci.yaml/badge.svg)](https://github.com/frederikb96/eck-on-talos/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A hands-on guide to running a **3-node Elastic Stack** on **Talos Linux VMs** using **Elastic Cloud on Kubernetes (ECK)**. The result: Elasticsearch, Kibana, Fleet Server and Elastic Agent — all managed by the Kubernetes operator, running on an immutable OS with essentially zero maintenance burden.
+A hands-on guide to running a **production-ready, easy-to-maintain 3-node Elastic Stack** on **Talos Linux VMs** using **Elastic Cloud on Kubernetes (ECK)**. The result: Elasticsearch, Kibana, Fleet Server and Elastic Agent — all managed by the Kubernetes operator, running on an immutable OS with essentially zero maintenance burden.
+
+> 🧪 **Tested end-to-end with 3 Azure VMs.** Every step in this guide was walked through by a fresh user on a new cluster before publishing, specifically to catch the "wait, what do I click here?" moments. A very similar setup has been running in production for multiple years, so the architecture is not experimental — just documented here in its most minimal, most teachable form.
 
 **Why Talos + ECK instead of installing Elasticsearch directly on a Linux VM?**
 
@@ -19,7 +25,7 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
 ## Table of Contents
 
 - [What you get](#what-you-get)
-- [What you don't get](#what-you-dont-get)
+- [Optional extensions (not part of this guide)](#optional-extensions-not-part-of-this-guide-but-easy-to-add-later)
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
 - [Step 1 — Boot Talos on each VM](#step-1--boot-talos-on-each-vm)
@@ -55,16 +61,17 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
 - **Audit logging** enabled on Elasticsearch and Kibana
 - **NodePort services** for Elasticsearch (30920), Kibana (30601) and Fleet Server (30822), reachable on any node IP → de-facto HA without a load balancer
 
-## What you don't get
+## Optional extensions (not part of this guide, but easy to add later)
 
-- No searchable snapshot / frozen tier — this guide is a single hot tier
-- No ingress controller (Traefik / NGINX / HAProxy) — NodePort is enough for a LAN deployment
-- No external load balancer — if you want one, put HAProxy or your cloud LB in front of the three node IPs
-- No cert-manager / Let's Encrypt — the internal CA is the source of TLS truth
-- No GitOps / Flux / Argo CD — every action in this guide is a manual `kubectl`/`helm` command, and the repo is a reference, not a runtime deployment system
-- No multi-tenant Elastic setup — one cluster, one workload
+The philosophy of this guide is **start minimal, grow into complexity**. Everything below is something you _could_ add on top of the baseline setup. None of it is required to run a healthy Elastic Stack — and adding all of it upfront would bury the important ideas under tooling noise. Come back to this list once the basic stack is running and you know what you actually need.
 
-If you need any of the above, the patterns here still work as a baseline — you'll just add tooling on top.
+- **Searchable snapshot / frozen tier.** This guide deploys a single hot tier (all 3 nodes hold the same kind of data). Adding a frozen tier later is mostly an Elasticsearch-level change: define a snapshot repository (see [Maintenance → Adding an S3 snapshot repository](#adding-an-s3-snapshot-repository) below for a worked example), and optionally define dedicated frozen nodes in a second `nodeSet`. The Talos + ECK foundation doesn't change.
+- **External load balancer.** NodePort already gives you LAN-level HA because any client can hit any node IP and reach any replica (see [NodePort vs pod placement](#how-nodeport-routing-actually-works) below). If you want a single DNS name or you're serving traffic from outside the LAN, put HAProxy / your cloud LB in front of the three node IPs on ports 30920 / 30601 / 30822.
+- **Ingress controller** (Traefik / NGINX / HAProxy-Ingress). Same logic — for a LAN deployment NodePort is enough. Add an ingress controller only if you're already running one cluster-wide, or you need path-based routing / host-based routing / advanced TLS termination.
+- **cert-manager + Let's Encrypt.** Your internal CA is simpler and has no renewal cycle. Add cert-manager only if the cluster will serve publicly-routable DNS names and you actually want public CA-signed certs.
+- **GitOps (Flux / Argo CD).** For a single cluster running a single workload, Flux is complete overkill. Its value comes from managing _many_ things across _many_ clusters. This repo stays intentionally Helm-CLI-driven — simple enough that a newcomer can follow it step by step, but still declarative enough that every change is a git commit.
+
+Everything listed here has been deliberately left out to keep the moving parts minimal. The baseline setup is fully production-capable on its own.
 
 ---
 
@@ -92,33 +99,9 @@ Every one of these files is **small and heavily commented**. Open them as you go
 
 ## Architecture
 
-```
-             ┌──────────────────────── LAN ─────────────────────────┐
-             │                                                      │
-   Client ───┤  https://10.0.0.11:30601                              │
-             │  https://10.0.0.12:30601 (Kibana NodePort)            │
-             │  https://10.0.0.13:30601                              │
-             │                                                      │
-             │  https://10.0.0.1X:30920 (Elasticsearch NodePort)     │
-             │  https://10.0.0.1X:30822 (Fleet Server NodePort)      │
-             └───┬──────────────┬──────────────┬─────────────────────┘
-                 │              │              │
-              ┌──▼───┐       ┌──▼───┐       ┌──▼───┐
-              │node1 │       │node2 │       │node3 │        3× Talos VM
-              │      │       │      │       │      │        - CP + worker stacked
-              │ ES-1 │       │ ES-2 │       │ ES-3 │        - Flannel (Talos built-in)
-              │ Kbn  │       │ Kbn  │       │      │        - local-storage PV
-              │ FlSv │       │ FlSv │       │      │
-              │ Agt  │       │ Agt  │       │ Agt  │ ◀── DaemonSet
-              └──┬───┘       └──┬───┘       └──┬───┘
-                 │              │              │
-                 └─── /var/mnt/data (dedicated second disk per VM) ──┘
-                        ext4, auto-mounted by Talos UserVolumeConfig
+![3-node ECK on Talos architecture diagram](assets/architecture.png)
 
-  TLS: one internal CA in Secret `eck-ca` (ca.crt + ca.key)
-       → ECK signs per-component leaf certs with SANs for node IPs + DNS
-       → clients trust one ca.crt, everything works
-```
+Three Talos VMs on the same LAN, each one a stacked Kubernetes control-plane + worker. Clients reach the services via NodePort (30920 Elasticsearch, 30601 Kibana, 30822 Fleet Server) — kube-proxy on any node load-balances to any available pod. Every node runs an Elastic Agent (DaemonSet) for cluster-wide observability; nodes 1 and 2 also run Kibana and Fleet Server (`count: 2` with anti-affinity), while node3 is ES + Agent only. Elasticsearch data lives on each node's second disk (`/var/mnt/data`) bound as a native Kubernetes local Persistent Volume. A single internal CA (stored in the `eck-ca` Secret) is used by ECK to sign the TLS leaf certificates for Elasticsearch, Kibana and Fleet Server — clients trust one `ca.crt` and get valid TLS on every component. Flannel CNI ships built into Talos, so there's no CNI to install or maintain.
 
 ---
 
@@ -128,11 +111,30 @@ Every one of these files is **small and heavily commented**. Open them as you go
 
 - **3 virtual machines** on the same layer-2 / layer-3 segment. Any hypervisor (KVM / libvirt, Proxmox, VMware, Hyper-V, Nutanix, Azure, GCE, EC2, Hetzner Cloud…) works.
 - **Per VM:**
-  - ≥ 4 vCPU, ≥ 16 GiB RAM (ideally 32 GiB so Elasticsearch gets a comfortable 8 GiB heap)
+  - ≥ 4 vCPU, **≥ 16 GiB RAM** (16 GiB is the recommended minimum — see sizing below)
   - **Disk 1 (system):** ≥ 32 GiB, Talos OS — you can use the hypervisor's default virtual disk
   - **Disk 2 (data):** ≥ 100 GiB, a second virtual disk dedicated to Elasticsearch data. Talos auto-mounts it at `/var/mnt/data` via `UserVolumeConfig`.
 - **Static IPs** on the LAN. This guide assumes `10.0.0.11`, `10.0.0.12`, `10.0.0.13`. Replace them with your own throughout.
 - **DNS and default gateway** — Talos needs internet to pull its installer image and the container images the first time. An air-gapped setup is possible but out of scope here.
+
+### Sizing the VMs (RAM budget per node)
+
+16 GiB per VM is the sweet spot. Here's the budget:
+
+| Component | Memory | Runs on |
+|---|---|---|
+| Elasticsearch | 8 GiB (locked, request == limit) | every node (1 ES pod per node) |
+| Kibana | ~1 GiB steady, burstable | 2 of 3 nodes |
+| Fleet Server | ~1 GiB steady, burstable | 2 of 3 nodes |
+| Elastic Agent (DaemonSet) | ~1 GiB steady, burstable | every node |
+| Talos OS + kubelet | ~2 GiB | every node |
+| **Peak footprint on a busy node** | **≈ 13 GiB** | with 16 GiB you still have ~3 GiB headroom |
+
+This is why **16 GiB is the floor**. Below that you start trading off ES heap and Lucene's off-heap file cache, which hurts performance dramatically.
+
+**Want more headroom?** 32 GiB VMs let you raise Elasticsearch to 16 GiB memory (which also raises the JVM heap automatically — ECK auto-sizes heap from `resources.limits.memory`, you don't have to fiddle with `ES_JAVA_OPTS`). 64 GiB VMs push ES to 31 GiB — the largest useful heap, above which the JVM loses compressed ordinary object pointers and gets _less_ efficient.
+
+Going **above 64 GiB per node** for a single-ES-per-node layout like this one is wasted money. If you need more capacity, add nodes, not RAM.
 
 ### Client workstation tools
 
@@ -143,14 +145,24 @@ helm version                # ≥ 3.14
 openssl version             # 1.1 or 3.x
 ```
 
-On Debian/Ubuntu:
+Install commands that work on any Debian/Ubuntu box. All four binaries come from their upstream release pages — no package manager gymnastics needed:
 
 ```bash
-curl -sL https://talos.dev/install | sh
-curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
-  && sudo install kubectl /usr/local/bin/ && rm kubectl
+# talosctl — direct binary from the siderolabs/talos GitHub releases
+curl -Lo talosctl https://github.com/siderolabs/talos/releases/latest/download/talosctl-linux-amd64
+chmod +x talosctl && sudo install talosctl /usr/local/bin/ && rm talosctl
+
+# kubectl — official upstream release
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install kubectl /usr/local/bin/ && rm kubectl
+
+# helm — official install script
 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# openssl is almost certainly already installed on your distro
 ```
+
+> 🛈 **Homebrew alternative**: if you use Homebrew on Linux, `brew install siderolabs/tap/talosctl kubernetes-cli helm` covers all four in one command. See the [talosctl install docs](https://www.talos.dev/latest/talos-guides/install/talosctl/) for macOS / other platforms.
 
 ### Clone this repository
 
@@ -161,16 +173,13 @@ cd eck-on-talos
 
 All commands below assume you're in the repo root.
 
-### Pick your versions
-
-We pin everything the customer has to think about in one place. The defaults are known-good at the time of writing:
+### Pick your Talos version
 
 ```bash
 talos_version="v1.12.6"
-schematic="ce4c980550d5ca4b12c6951ab2920b663f501547aab525d571e1bfd25111c0be"  # stock, no extensions
 ```
 
-> Need extra Talos system extensions? Build your own schematic at <https://factory.talos.dev> and swap the ID above.
+> 🛈 **About Talos schematics** (advanced, optional): Talos lets you add kernel modules or system extensions (ZFS, tailscale, iscsi-tools, …) via a "schematic" ID from [factory.talos.dev](https://factory.talos.dev). **This guide does NOT need any extensions** — the stock Talos image has everything ECK requires. Only set a `schematic` variable if you know you need a specific extension, and then prepend `${schematic}/` to the image URLs below.
 
 ---
 
@@ -180,10 +189,11 @@ Talos runs directly from a factory-built image. You have two installation paths.
 
 ### Option A — ISO boot (recommended, works on any hypervisor that mounts ISOs)
 
-1. Download the Talos ISO for your schematic:
+1. Download the stock Talos ISO directly from the siderolabs GitHub releases:
    ```bash
-   wget "https://factory.talos.dev/image/${schematic}/${talos_version}/metal-amd64.iso"
+   wget "https://github.com/siderolabs/talos/releases/download/${talos_version}/metal-amd64.iso"
    ```
+   (Or, if you want a custom schematic with extensions: `wget "https://factory.talos.dev/image/<your-schematic-id>/${talos_version}/metal-amd64.iso"`.)
 2. Upload the ISO to your hypervisor's image store (Proxmox: "ISO images", VMware: datastore, libvirt: `/var/lib/libvirt/images`, Hetzner Cloud: attach ISO via API/Console).
 3. For each VM: set the ISO as the boot device, power on, watch it boot into Talos maintenance mode.
 4. Once all three VMs show the Talos dashboard with an IP on their console, unmount the ISO so the next boot uses the installed system disk.
@@ -194,7 +204,7 @@ Use this when your hypervisor doesn't let you attach an ISO but does give you a 
 
 ```bash
 cd /tmp
-wget "https://factory.talos.dev/image/${schematic}/${talos_version}/metal-amd64.raw.xz"
+wget "https://github.com/siderolabs/talos/releases/download/${talos_version}/metal-amd64.raw.xz"
 # Identify the system disk — DOUBLE CHECK THIS, the dd is destructive.
 lsblk
 # Wipe and write
@@ -573,6 +583,30 @@ Log in with username `elastic` and the password from Step 13.
 
 The browser will warn about the certificate because your internal CA is not in the system trust store yet — that's Step 15. You can click through the warning for now.
 
+### How NodePort routing actually works
+
+This matters, because the name is misleading. A NodePort on node1 **is not** "the Kibana pod on node1". It's a port that **every Kubernetes node** (node1, node2, node3) listens on. When a request arrives on ANY node's IP at port 30601, kube-proxy intercepts it and forwards it to **any available Kibana pod anywhere in the cluster** — possibly the one running on a different node entirely.
+
+```
+Client → https://10.0.0.11:30601
+            │
+            ▼
+         kube-proxy on node1
+            │  (sees NodePort 30601 → Kibana Service)
+            ▼
+         picks a Kibana pod at random (could be on node2 or node3!)
+```
+
+That means:
+
+- Any node IP works. You can round-robin across the three in your own LB, or just use a single one — if the node hosting Kibana dies, the OTHER nodes still serve requests.
+- It's already a load balancer. kube-proxy distributes connections across all healthy Kibana replicas. You do NOT need a separate LB to get HA on the LAN.
+- The node IP you hit is irrelevant to where the work happens. `https://node1-ip:30601` is not "Kibana-on-node1" — it's "the Kibana Service, entered via the node1 door".
+
+You can verify this by looking at which pods actually handle requests. With two Kibana replicas and anti-affinity, one lives on node1 and one on node2; node3 has no Kibana pod — and yet `https://10.0.0.13:30601` still works perfectly because node3 forwards to the other two.
+
+The same is true for Elasticsearch (port 30920) and Fleet Server (port 30822).
+
 ### Via kubectl port-forward (dev / testing)
 
 If your workstation can't reach the node IPs directly (corporate firewalls, VPN quirks):
@@ -583,6 +617,34 @@ kubectl -n elastic-stack port-forward svc/kibana-kb-http 5601:5601
 ```
 
 This is convenient for first-time exploration but not a production pattern — it ties Kibana availability to your local `kubectl` session.
+
+### 🚨 First thing to do in Kibana — set ILM policies for the observability data
+
+**Do this on day one, before your cluster fills up.**
+
+Our Elastic Agent DaemonSet runs the Kubernetes integration on every node, which pulls metrics every few seconds (pod state, node stats, container stats, network stats, events) AND ships every container log from every pod in the cluster. On a quiet 3-node cluster this easily produces **several GiB of data per day** — and your `/var/mnt/data` PVs are only 100 GiB. Without an Index Lifecycle Management (ILM) policy, these indices grow forever and eventually fill your disks.
+
+**What to do, step by step:**
+
+1. Open Kibana → **Stack Management** → **Index Lifecycle Policies**.
+2. Elastic ships default policies for each integration (`logs`, `metrics`, `logs@custom`, `metrics@custom`, and integration-specific ones like `metrics-kubernetes.*`). Find the ones your Agent is writing to by going to **Stack Management → Index Management → Data Streams** and looking at which data streams are receiving data.
+3. For each data stream, edit (or override) the ILM policy that governs its backing indices. A sane starting point:
+   - **Hot phase:** rollover at 50 GB or 7 days, whichever comes first.
+   - **Delete phase:** 14–30 days.
+4. Apply the policies. Existing indices roll over on the next rollover check; new indices pick them up immediately.
+
+**Where this matters most on a small cluster:**
+
+| Data stream | Default retention | Recommended |
+|---|---|---|
+| `metrics-kubernetes.*` | forever | 7–14 days (container/pod metrics are high-cardinality) |
+| `logs-kubernetes.*` | forever | 7–14 days (container logs are VERY high volume) |
+| `metrics-system.*` | forever | 14–30 days |
+| `metrics-elasticsearch.stack_monitoring.*` | forever | 14–30 days (nice to have a few weeks of historical Stack Monitoring) |
+
+See the [ILM policy docs](https://www.elastic.co/guide/en/elasticsearch/reference/current/index-lifecycle-management.html) for the full configuration reference. If you skip this step, **the single biggest day-2 operational failure mode of this stack is disk-full** — the Kubernetes integration alone will fill 100 GiB of hot storage in about a month of normal cluster activity.
+
+> 🛈 **Tip:** Once ILM is in place, you can double-check retention is actually being enforced by running `GET _cat/indices?v&s=index&h=index,docs.count,store.size,creation.date.string` from Kibana Dev Tools. Indices older than your delete-phase threshold should vanish on the next lifecycle execution.
 
 ---
 
@@ -639,14 +701,19 @@ The `--certificate-authorities` flag tells the agent to trust your internal CA, 
 
 ### Upgrading Talos
 
-Always one node at a time. Flannel is bundled with Talos — it upgrades with the OS automatically.
+Always one node at a time. Flannel is bundled with Talos — it upgrades with the OS automatically, you don't install or upgrade a CNI separately.
 
 ```bash
 talos_version="v1.12.7"
-image="factory.talos.dev/installer/${schematic}:${talos_version}"
+image="ghcr.io/siderolabs/installer:${talos_version}"
 
 # Drain node1, upgrade, uncordon
-kubectl drain node1 --ignore-daemonsets --delete-emptydir-data --force --disable-eviction --timeout=180s
+kubectl drain node1 \
+  --ignore-daemonsets \
+  --delete-emptydir-data \
+  --force \
+  --disable-eviction \
+  --timeout=180s
 talosctl upgrade --nodes 10.0.0.11 --image "$image" --preserve --reboot-mode powercycle --wait=false
 
 # Wait for the node to come back
@@ -657,7 +724,19 @@ kubectl uncordon node1
 # Repeat for node2 and node3
 ```
 
-> **Always use `--reboot-mode powercycle`.** The default kexec path leaves some Intel NICs (notably the I219 series on Hetzner bare metal) in an unusable state. `powercycle` forces a full BIOS reboot and re-initialises the NIC. On hypervisor VMs this is virtually free.
+#### What each `kubectl drain` flag does
+
+The drain command has an intimidating flag list. Here's what each one is actually for:
+
+- `--ignore-daemonsets` — the Elastic Agent DaemonSet (and Flannel, kube-proxy, etc.) has one pod per node. You can't drain a DaemonSet pod because the controller would immediately recreate it. Without this flag, drain refuses to start.
+- `--delete-emptydir-data` — some system pods mount `emptyDir` volumes (caches, tmp storage). Their contents are lost when the pod is deleted. Drain refuses by default because data loss is scary; passing this flag says "yes, I accept losing the cache data, proceed".
+- `--force` — allows deleting orphan pods (pods with no controller — e.g. a pod created with `kubectl run` without a Deployment). Safety net in case something weird is running on the node.
+- `--disable-eviction` — this is the important one. Normal drain uses the Eviction API, which respects PodDisruptionBudgets. ECK installs PDBs that can block eviction during a rolling maintenance window (Elasticsearch will refuse to be evicted if the cluster isn't green). `--disable-eviction` sends a direct DELETE instead, which bypasses the PDB. That's usually what you want during a Talos node upgrade: you've already drained one node at a time, you're not going to evict multiple ES pods simultaneously, and you want to actually proceed.
+- `--timeout=180s` — a wall-clock budget for the whole drain. If it takes longer than 3 minutes, drain bails out. Useful because a stuck pod would otherwise block the upgrade forever.
+
+#### `--reboot-mode powercycle`
+
+**Always use `--reboot-mode powercycle` on bare metal.** The default `kexec` reboot path leaves some Intel NICs (notably the I219 series used in Hetzner dedicated servers) in an unusable state and the node never comes back. `powercycle` forces a full BIOS reboot and re-initialises the NIC. On hypervisor VMs this is basically free (no BIOS firmware to slow it down) — no downside to using it as the default everywhere.
 
 ### Upgrading the ECK operator
 
@@ -690,6 +769,100 @@ ECK handles the rolling upgrade for you:
 - Elastic Agent DaemonSet pods are rolled
 
 Total upgrade time for a 3-node cluster: 10–20 minutes depending on data volume.
+
+### Changing a configuration value (Kibana / Elasticsearch)
+
+Every non-trivial setting in your stack lives in `kubernetes/eck-stack/values.yaml`. To change one:
+
+1. **Edit the file.** E.g. to enable a new Kibana setting, find the `eck-kibana.config:` block and add your key.
+2. **Re-run helm upgrade:**
+   ```bash
+   helm upgrade eck-stack elastic/eck-stack \
+     --version 0.18.1 \
+     --namespace elastic-stack \
+     --values kubernetes/eck-stack/values.yaml
+   ```
+3. **ECK picks up the change and does a rolling restart automatically.** For Elasticsearch it drains shards before restarting each node; for Kibana it rolls the Deployment; for Fleet Server it rolls the Agent pods. All of this is orchestrated by the operator — you don't touch `kubectl delete pod`.
+4. **Watch it happen:**
+   ```bash
+   kubectl -n elastic-stack get pods -w
+   ```
+
+That's the entire change loop. No manual SSHing into VMs, no editing `/etc/elasticsearch/elasticsearch.yml`, no `systemctl restart elasticsearch.service`.
+
+### Adding secrets (the Elasticsearch keystore)
+
+Some settings can't live in plaintext config — passwords, API keys, S3 credentials. Elasticsearch has a [keystore](https://www.elastic.co/guide/en/elasticsearch/reference/current/secure-settings.html) for these; ECK exposes it via `spec.secureSettings` which references one or more Kubernetes Secrets and injects their keys into the keystore at pod startup.
+
+**The flow:**
+
+1. Create a regular Kubernetes Secret with the values you want in the keystore.
+2. Reference the Secret from `eck-elasticsearch.secureSettings` in `values.yaml`, optionally remapping each key to a specific keystore setting name.
+3. `helm upgrade` → ECK restarts Elasticsearch → the new keystore entries become active.
+
+There's no `/etc/elasticsearch/elasticsearch.keystore` file for you to touch. The operator reconciles the keystore state automatically on every rolling restart.
+
+### Adding an S3 snapshot repository
+
+Here's a worked example that puts the maintenance flow, the keystore flow and the S3 repository settings together.
+
+**Step 1.** Create a Secret with your S3 access key and secret key:
+
+```bash
+kubectl -n elastic-stack create secret generic s3-snapshot \
+  --from-literal=access_key='AKIAEXAMPLE' \
+  --from-literal=secret_key='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+```
+
+**Step 2.** In `kubernetes/eck-stack/values.yaml`, add a `secureSettings` block under `eck-elasticsearch` so ECK loads those values into the Elasticsearch keystore under the expected key names:
+
+```yaml
+eck-elasticsearch:
+  secureSettings:
+    - secretName: s3-snapshot
+      entries:
+        - key: access_key
+          path: s3.client.default.access_key
+        - key: secret_key
+          path: s3.client.default.secret_key
+  nodeSets:
+    - name: default
+      config:
+        # Also tell Elasticsearch where to find the S3 endpoint:
+        s3.client.default.endpoint: "https://s3.example-region.amazonaws.com"
+        # ... rest of your existing config
+```
+
+**Step 3.** `helm upgrade eck-stack ...` as shown above. ECK reloads the keystore and does a rolling restart so every ES pod sees the new credentials.
+
+**Step 4.** Register the snapshot repository in Elasticsearch itself (once, via the REST API — this is cluster state, not node config):
+
+```bash
+ELASTIC_PW=$(kubectl -n elastic-stack get secret elasticsearch-es-elastic-user \
+  -o go-template='{{.data.elastic | base64decode}}')
+
+curl --cacert ca/ca.crt -u "elastic:${ELASTIC_PW}" \
+  -X PUT "https://10.0.0.11:30920/_snapshot/my-backup" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "s3",
+    "settings": {
+      "bucket": "my-elastic-backups",
+      "client": "default"
+    }
+  }'
+```
+
+**Step 5.** Take a snapshot:
+
+```bash
+curl --cacert ca/ca.crt -u "elastic:${ELASTIC_PW}" \
+  -X PUT "https://10.0.0.11:30920/_snapshot/my-backup/snapshot-1?wait_for_completion=true"
+```
+
+Once you have a snapshot repository wired up, **everything else that depends on it is trivial**: Snapshot Lifecycle Management (SLM) policies, index rollover with rollup-and-delete, searchable snapshots, and eventually a frozen tier. All of it is configurable from the Kibana UI once the keystore credentials are in place. This is the usual "add a frozen tier to my cluster" entry point you keep hearing about — and it all starts with this one Secret.
+
+See the [Elasticsearch S3 repository docs](https://www.elastic.co/guide/en/elasticsearch/reference/current/repository-s3.html) for all available client settings (region, max retries, bucket versioning, etc.).
 
 ### Rotating the internal CA
 
