@@ -24,20 +24,29 @@ TALOS_VERSION="v1.12.6"
 SCHEMATIC="376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba"
 SSH_KEY=$(cat ~/.ssh/id_ed25519.pub)
 
-# ─── 1. Resource group ───
+# ─── 1. Register Standard security type (one-time per subscription, ~1–5 min) ───
+# Subscriptions default to Trusted Launch for Gen 2 images; Talos needs Standard.
+# If already registered, this is a no-op. Poll until state = "Registered".
+az feature register --namespace Microsoft.Compute --name UseStandardSecurityType
+while [ "$(az feature show --namespace Microsoft.Compute --name UseStandardSecurityType --query properties.state -o tsv)" != "Registered" ]; do
+  echo "waiting for feature registration..."; sleep 15
+done
+az provider register --namespace Microsoft.Compute
+
+# ─── 2. Resource group ───
 az group create -n "$RG" -l "$LOC"
 
-# ─── 2. Download + decompress Talos VHD (~2–3 min) ───
+# ─── 3. Download + decompress Talos VHD (~2–3 min) ───
 mkdir -p /tmp/talos-azure && cd /tmp/talos-azure
 wget "https://factory.talos.dev/image/${SCHEMATIC}/${TALOS_VERSION}/azure-amd64.vhd.xz"
 xz -d azure-amd64.vhd.xz
 
-# ─── 3. Storage account + container ───
+# ─── 4. Storage account + container ───
 az storage account create -n "$SA" -g "$RG" -l "$LOC" --sku Standard_LRS
 KEY=$(az storage account keys list -g "$RG" -n "$SA" --query '[0].value' -o tsv)
 az storage container create --account-name "$SA" --account-key "$KEY" -n images
 
-# ─── 4. Upload VHD as page blob (~2–5 min) ───
+# ─── 5. Upload VHD as page blob (~2–5 min) ───
 az storage blob upload \
   --account-name "$SA" --account-key "$KEY" \
   --container-name images \
@@ -45,17 +54,17 @@ az storage blob upload \
   --file /tmp/talos-azure/azure-amd64.vhd \
   --name "talos-${TALOS_VERSION}.vhd"
 
-# ─── 5. Register as custom image ───
+# ─── 6. Register as custom image ───
 BLOB_URL="https://${SA}.blob.core.windows.net/images/talos-${TALOS_VERSION}.vhd"
 az image create -g "$RG" -n "talos-${TALOS_VERSION}" \
   --source "$BLOB_URL" --os-type Linux --hyper-v-generation V2 --location "$LOC"
 
-# ─── 6. VNet + subnet ───
+# ─── 7. VNet + subnet ───
 az network vnet create -g "$RG" -n eck-vnet \
   --address-prefix 10.0.0.0/16 \
   --subnet-name eck-subnet --subnet-prefix 10.0.0.0/24
 
-# ─── 7. NSG + rules + associate to subnet ───
+# ─── 8. NSG + rules + associate to subnet ───
 # 0.0.0.0/0 is fine: Talos (50000) + k8s (6443) are mTLS, NodePorts have basic auth.
 az network nsg create -g "$RG" -n eck-nsg
 az network nsg rule create -g "$RG" --nsg-name eck-nsg -n talos-api        --priority 100 --destination-port-ranges 50000 --protocol Tcp --access Allow
@@ -66,12 +75,12 @@ az network nsg rule create -g "$RG" --nsg-name eck-nsg -n fleet-nodeport   --pri
 az network nsg rule create -g "$RG" --nsg-name eck-nsg -n intra-lan        --priority 200 --source-address-prefixes 10.0.0.0/24 --destination-port-ranges '*' --protocol '*' --access Allow
 az network vnet subnet update -g "$RG" --vnet-name eck-vnet -n eck-subnet --network-security-group eck-nsg
 
-# ─── 8. Static public IPs for the 3 VMs ───
+# ─── 9. Static public IPs for the 3 VMs ───
 for i in 1 2 3; do
   az network public-ip create -g "$RG" -n "node$i-pip" --sku Standard --allocation-method Static
 done
 
-# ─── 9. Three VMs — Standard security (NOT TrustedLaunch!), parallel create (~2 min) ───
+# ─── 10. Three VMs — Standard security (NOT TrustedLaunch!), parallel create (~2 min) ───
 IMAGE_ID=$(az image show -g "$RG" -n "talos-${TALOS_VERSION}" --query id -o tsv)
 for i in 1 2 3; do
   az vm create -g "$RG" -n "node$i" \
@@ -89,22 +98,27 @@ for i in 1 2 3; do
     --data-disk-sizes-gb 128 \
     --no-wait
 done
-for i in 1 2 3; do az vm wait -g "$RG" -n "node$i" --created; done
+for i in 1 2 3; do
+  timeout 300 az vm wait -g "$RG" -n "node$i" --created \
+    || az deployment group list -g "$RG" --query '[?properties.provisioningState==`Failed`].name' -o tsv
+done
 
-# ─── 10. Print public IPs + verify Talos maintenance mode ───
+# ─── 11. Print public IPs + verify Talos maintenance mode ───
 az vm list-ip-addresses -g "$RG" -o table
 for i in 1 2 3; do
   ip=$(az vm show -g "$RG" -n "node$i" -d --query publicIps -o tsv)
   echo "=== node$i ($ip) ==="
   talosctl -n "$ip" version --insecure
 done
+# Expected output from each node:
+# error getting version: rpc error: code = Unimplemented desc = API is not implemented in maintenance mode
 ```
 
 Expected final output: each node prints `API is not implemented in maintenance mode`. That's success → jump to [Step 2 of the main guide](README.md#step-2--locate-the-nodes-and-verify-disks).
 
 **Azure-specific notes for the main guide** (same as the Portal path — see [bottom of this file](#continue-with-the-main-guide) for the full list): interface is `eth0`, gateway is `10.0.0.1`, system disk is `/dev/sda`, data disk is `/dev/sdb`, and `cluster.controlPlane.endpoint` must be `https://<node1-public-ip>:6443`.
 
-**Cleanup when done:** `az group delete -n eck-on-talos-test --yes --no-wait`
+**Cleanup when done:** `az group delete -n "$RG" --yes --no-wait`
 
 ## Prerequisites
 
