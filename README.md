@@ -119,20 +119,23 @@ Three Talos VMs on the same LAN, each one a stacked Kubernetes control-plane + w
 
 ### Sizing the VMs (RAM budget per node)
 
-16 GiB per VM is the sweet spot. Here's the budget:
+**16 GiB per VM is the recommended minimum.** Here's the budget for the two busiest nodes (nodes 1 and 2 — they run Kibana and Fleet Server in addition to Elasticsearch):
 
-| Component | Memory | Runs on |
+| Component | Planned memory | Runs on |
 |---|---|---|
 | Elasticsearch | 8 GiB (locked, request == limit) | every node (1 ES pod per node) |
-| Kibana | ~1 GiB steady, burstable | 2 of 3 nodes |
-| Fleet Server | ~1 GiB steady, burstable | 2 of 3 nodes |
-| Elastic Agent (DaemonSet) | ~1 GiB steady, burstable | every node |
+| Kibana | up to 2 GiB (request 1 GiB, no limit — bursts freely) | 2 of 3 nodes |
+| Fleet Server | up to 2 GiB (request 1 GiB, no limit — bursts freely) | 2 of 3 nodes |
+| Elastic Agent (DaemonSet) | up to 2 GiB (request 1 GiB, no limit — bursts freely) | every node |
 | Talos OS + kubelet | ~2 GiB | every node |
-| **Peak footprint on a busy node** | **≈ 13 GiB** | with 16 GiB you still have ~3 GiB headroom |
+| **Peak footprint on a busy node** | **≈ 16 GiB** | nodes 1 and 2 — node 3 has ~4 GiB headroom |
 
-This is why **16 GiB is the floor**. Below that you start trading off ES heap and Lucene's off-heap file cache, which hurts performance dramatically.
+**Why 16 GiB is the floor:** drop below that and you start eating into Elasticsearch's heap budget or Lucene's off-heap file cache, which hurts search/indexing performance dramatically.
 
-**Want more headroom?** 32 GiB VMs let you raise Elasticsearch to 16 GiB memory (which also raises the JVM heap automatically — ECK auto-sizes heap from `resources.limits.memory`, you don't have to fiddle with `ES_JAVA_OPTS`). 64 GiB VMs push ES to 31 GiB — the largest useful heap, above which the JVM loses compressed ordinary object pointers and gets _less_ efficient.
+**Want more headroom?** Raise `resources.limits.memory` for Elasticsearch in `kubernetes/eck-stack/values.yaml`:
+
+- **32 GiB VMs** → set ES memory to 16 GiB. Elasticsearch auto-sizes the JVM heap from the container memory limit (no `ES_JAVA_OPTS` to touch), so heap goes to ~8 GiB automatically.
+- **64 GiB VMs** → set ES memory to 31 GiB (the highest useful heap — above ~31 GiB the JVM loses compressed ordinary object pointers and gets _less_ efficient, not more).
 
 Going **above 64 GiB per node** for a single-ES-per-node layout like this one is wasted money. If you need more capacity, add nodes, not RAM.
 
@@ -478,32 +481,26 @@ The file is heavily commented — every non-trivial setting has an inline explan
 | `kibana.lan` | DNS name you'll use for Kibana, or delete this `dns:` line |
 | `fleet.lan` | DNS name you'll use for Fleet Server, or delete this `dns:` line |
 
-> 🛈 **Why the DNS names matter:** They become `subjectAltName` entries on the TLS leaf certificates ECK signs with your CA. When a client connects to `https://elastic.lan:30920`, TLS validation checks whether `elastic.lan` is in the cert's SAN list. If it's not, the client rejects the connection. Adding DNS names here means you (or your customer) can later point a real DNS record at the node IPs and nothing else has to change.
+> 🛈 **Why the DNS names matter** (they actually do double duty):
+>
+> 1. **TLS SubjectAltNames.** They become SAN entries on the leaf certificates ECK signs with your CA. When a client connects to `https://elastic.lan:30920`, TLS validation checks whether `elastic.lan` is in the cert's SAN list. If it's not, the handshake fails.
+> 2. **Default Fleet outputs for externally-enrolled agents.** The Kibana config declares two Fleet outputs and two Fleet Server hosts — one set pointing at the in-cluster `.svc` DNS (for agents running inside Kubernetes), and one pointing at `https://elastic.lan:30920` / `https://fleet.lan:30822` (the NodePort addresses). The NodePort versions are `is_default: true`, so when someone enrolls an agent from OUTSIDE the cluster via the Kibana UI, they automatically get the NodePort URL as the default — no manual override needed.
+>
+> Point a real DNS record (internal company DNS, hosts file, etc.) at one of your node IPs (or a load balancer distributing across all three), and the whole chain just works: TLS verifies, Fleet hands agents the right URL, and clients can move between node IPs transparently.
 
 ### What's pre-tuned (so you don't have to think about it)
 
 | Setting | Value | Why |
 |---|---|---|
-| ES JVM heap | `-Xms4g -Xmx4g` | Half of the 8 GiB container memory — the standard Elasticsearch rule of thumb. Raise this if you give ES more memory. |
-| ES memory request == limit | `8Gi` == `8Gi` | Elasticsearch is allergic to memory pressure. Request==limit gives it "Guaranteed" QoS and locks the allocation. |
+| ES memory request == limit | `8Gi` == `8Gi` | Elasticsearch is allergic to memory pressure. Request==limit gives it "Guaranteed" QoS and locks the allocation. ECK auto-sizes the JVM heap to ~50% of this — no `ES_JAVA_OPTS` to fiddle with. |
+| Kibana / Fleet Server / Agent memory | request `1Gi`, no limit | Stateless services — they can burst freely under load without risk of OOM-kill. |
 | Elasticsearch audit logging | ON | Records auth attempts, permission denials, config changes. Searchable in Kibana. |
 | Kibana self-monitoring | ON | Stack Monitoring data ships back into the same cluster — one UI to rule them all. |
 | Fleet Server replicas | 2 | HA, spread across two nodes via anti-affinity. |
 | Elastic Agent Kubernetes integration | ON | Cluster-wide observability on every node by default. |
 | Pod anti-affinity | Enforced (required) | Kubernetes scheduler refuses to place two pods of the same type on the same node. |
 
-### Sizing for your VMs
-
-The defaults assume **16 GiB per VM**. If your VMs are bigger or smaller, adjust these values:
-
-| VM memory | ES memory (request=limit) | ES `ES_JAVA_OPTS` |
-|---|---|---|
-| 8 GiB | 4Gi | `-Xms2g -Xmx2g` |
-| 16 GiB | 8Gi | `-Xms4g -Xmx4g` ← **default** |
-| 32 GiB | 16Gi | `-Xms8g -Xmx8g` |
-| 64 GiB | 31Gi | `-Xms30g -Xmx30g` |
-
-> 🛈 **Never give Elasticsearch more than ~31 GiB heap.** Above that threshold the JVM loses "compressed ordinary object pointers" (compressed oops) and each pointer doubles in size — you'd actually have *less* effective heap.
+If your VMs are bigger than 16 GiB, just raise `resources.limits.memory` on the Elasticsearch section of `values.yaml` — Elasticsearch's auto-heap follows the memory limit automatically (see [Sizing the VMs](#sizing-the-vms-ram-budget-per-node) in Prerequisites for the numbers). Nothing else needs to change.
 
 ---
 
