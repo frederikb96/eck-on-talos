@@ -386,54 +386,68 @@ eck-kibana:
     # -----------------------------------------------------------------
     # We declare two Elasticsearch outputs side by side:
     #
+    #   external-es    → lists all three node IPs on the NodePort.
+    #                    Marked `is_default: true` AND `is_default_
+    #                    monitoring: true` — this is what every newly
+    #                    enrolled agent gets by default (in-cluster OR
+    #                    external). When an agent sees multiple hosts,
+    #                    it picks one randomly and fails over to the
+    #                    others if that one becomes unreachable, so we
+    #                    get de-facto HA across all three nodes without
+    #                    any external load balancer.
+    #
     #   kubernetes-es  → points at the IN-CLUSTER .svc DNS name.
-    #                    Used by in-cluster agents (the Fleet Server
-    #                    pods and the Elastic Agent DaemonSet). The
-    #                    in-cluster DNS name is short, stable and
-    #                    unchanged across node reboots — perfect for
-    #                    anything inside the cluster.
+    #                    Kept around for edge cases where an operator
+    #                    wants to pin a specific policy to in-cluster
+    #                    traffic only (slightly lower latency, never
+    #                    leaves the Kubernetes network). Not the
+    #                    default — agents only use it when a policy
+    #                    explicitly references `id: kubernetes-es`.
     #
-    #   external-es    → points at https://elastic.lan:30920 (the
-    #                    NodePort address for Elasticsearch).
-    #                    Marked `is_default: true` so when a new agent
-    #                    is enrolled from the Kibana UI with no output
-    #                    override, Kibana hands it THIS output.
-    #                    External agents running OUTSIDE the cluster
-    #                    (on laptops, other servers, other VMs) can
-    #                    reach this but cannot reach the in-cluster
-    #                    .svc DNS.
+    # Replace the three IPs (10.0.0.11 / 10.0.0.12 / 10.0.0.13) with
+    # your actual node addresses. The IPs must also be in the
+    # subjectAltNames block of the Elasticsearch CR above (they are —
+    # the same three IPs appear in both places).
     #
-    # "elastic.lan" is a placeholder you replace with a DNS name that
-    # points at any one of your node IPs (or at a load balancer
-    # distributing across all three). You can also replace it with a
-    # raw IP, e.g. https://10.0.0.11:30920, but a DNS name is nicer
-    # because it survives IP changes. Whatever you pick MUST be in the
-    # subjectAltNames list of the Elasticsearch CR above.
+    # Optional: add a DNS name in addition to (or instead of) the IPs.
+    # E.g. add "https://elastic.lan:30920" as a fourth entry, point
+    # elastic.lan in your internal DNS at a NodePort load balancer or
+    # just one of the nodes, and the agent will prefer it. The DNS
+    # name also needs to be in the subjectAltNames of the ES CR.
     xpack.fleet.outputs:
+      - id: external-es
+        name: External ES (NodePort HA)
+        type: elasticsearch
+        hosts:
+          - "https://10.0.0.11:30920"
+          - "https://10.0.0.12:30920"
+          - "https://10.0.0.13:30920"
+        is_default: true
+        is_default_monitoring: true
       - id: kubernetes-es
         name: Kubernetes ES (in-cluster)
         type: elasticsearch
         hosts: ["https://elasticsearch-es-http.elastic-stack.svc:9200"]
-      - id: external-es
-        name: External ES (NodePort)
-        type: elasticsearch
-        hosts: ["https://elastic.lan:30920"]
-        is_default: true
-        is_default_monitoring: true
 
-    # Same pattern for Fleet Server: one Fleet Server host entry for
-    # in-cluster agents (.svc DNS), one for external agents (NodePort
-    # on a replaceable DNS name). The external one is marked as the
-    # default so new agents enrolled from the Kibana UI receive the
-    # NodePort URL by default.
+    # Same pattern for Fleet Server: primary host entry lists all three
+    # node IPs on the Fleet Server NodePort, marked is_default so newly
+    # enrolled agents receive all three and can fail over between them.
+    # An in-cluster .svc entry is kept around for edge cases but isn't
+    # the default.
+    #
+    # As with the ES output above, you can optionally add a DNS name
+    # (e.g. https://fleet.lan:30822) as an additional host_urls entry.
     xpack.fleet.fleetServerHosts:
+      - id: external-fleet
+        name: External Fleet (NodePort HA)
+        host_urls:
+          - "https://10.0.0.11:30822"
+          - "https://10.0.0.12:30822"
+          - "https://10.0.0.13:30822"
+        is_default: true
       - id: kubernetes-fleet
         name: Kubernetes Fleet (in-cluster)
         host_urls: ["https://fleet-server-agent-http.elastic-stack.svc:8220"]
-      - id: external-fleet
-        name: External Fleet (NodePort)
-        host_urls: ["https://fleet.lan:30822"]
-        is_default: true
 
     # Integration packages Kibana should install on startup. These become
     # available in the Fleet "Integrations" catalogue so agent policies

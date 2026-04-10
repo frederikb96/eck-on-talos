@@ -45,15 +45,6 @@ Everything in this repo is declarative. To change anything:
 - **Add a Kibana/Fleet user** → Kibana → Stack Management → Users
 - **Add an external Elastic Agent** → Kibana → Fleet → Agent policies → copy token, install agent with `--certificate-authorities=ca/ca.crt`
 
-## Known runtime footprint
-
-| Component | Replicas | CPU request | Memory request | Memory limit |
-|---|---|---|---|---|
-| Elasticsearch | 3 | 500m | 8 GiB | 8 GiB |
-| Kibana | 2 | 100m | 1 GiB | 2 GiB |
-| Fleet Server | 2 | 50m | 512 MiB | 2 GiB |
-| Elastic Agent DS | 3 (one per node) | 100m | 512 MiB | 2 GiB |
-
 ## Versions
 
 ```

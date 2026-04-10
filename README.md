@@ -24,29 +24,55 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
 
 ## Table of Contents
 
-- [What you get](#what-you-get)
-- [Optional extensions (not part of this guide)](#optional-extensions-not-part-of-this-guide-but-easy-to-add-later)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Step 1 — Boot Talos on each VM](#step-1--boot-talos-on-each-vm)
-- [Step 2 — Locate the nodes and verify disks](#step-2--locate-the-nodes-and-verify-disks)
-- [Step 3 — Generate the Talos machine config](#step-3--generate-the-talos-machine-config)
-- [Step 4 — Apply the config to each node](#step-4--apply-the-config-to-each-node)
-- [Step 5 — Bootstrap the cluster](#step-5--bootstrap-the-cluster)
-- [Step 6 — Get kubeconfig and verify](#step-6--get-kubeconfig-and-verify)
-- [Step 7 — Create the internal CA](#step-7--create-the-internal-ca)
-- [Step 8 — Create namespaces and the CA secret](#step-8--create-namespaces-and-the-ca-secret)
-- [Step 9 — Create the StorageClass and PVs](#step-9--create-the-storageclass-and-pvs)
-- [Step 10 — Install the ECK operator](#step-10--install-the-eck-operator)
-- [Step 11 — Customise values.yaml](#step-11--customise-valuesyaml)
-- [Step 12 — Deploy the Elastic stack](#step-12--deploy-the-elastic-stack)
-- [Step 13 — Get the elastic user password](#step-13--get-the-elastic-user-password)
-- [Step 14 — Access Kibana](#step-14--access-kibana)
-- [Step 15 — Trust the CA on clients](#step-15--trust-the-ca-on-clients)
-- [Step 16 — Enrolling external Elastic Agents](#step-16--enrolling-external-elastic-agents)
-- [Maintenance](#maintenance)
-- [Troubleshooting](#troubleshooting)
-- [FAQ](#faq)
+- [ECK on Talos](#eck-on-talos)
+  - [Table of Contents](#table-of-contents)
+  - [What you get](#what-you-get)
+  - [Optional extensions (not part of this guide, but easy to add later)](#optional-extensions-not-part-of-this-guide-but-easy-to-add-later)
+  - [Repository structure](#repository-structure)
+  - [Architecture](#architecture)
+  - [Prerequisites](#prerequisites)
+    - [Infrastructure](#infrastructure)
+    - [Sizing the VMs (RAM budget per node)](#sizing-the-vms-ram-budget-per-node)
+    - [Client workstation tools](#client-workstation-tools)
+    - [Clone this repository](#clone-this-repository)
+    - [Pick your Talos version](#pick-your-talos-version)
+  - [Step 1 — Boot Talos on each VM](#step-1--boot-talos-on-each-vm)
+    - [Option A — ISO boot (recommended, works on any hypervisor that mounts ISOs)](#option-a--iso-boot-recommended-works-on-any-hypervisor-that-mounts-isos)
+    - [Option B — `dd` from a rescue system](#option-b--dd-from-a-rescue-system)
+    - [What "maintenance mode" means](#what-maintenance-mode-means)
+  - [Step 2 — Locate the nodes and verify disks](#step-2--locate-the-nodes-and-verify-disks)
+  - [Step 3 — Generate the Talos machine config](#step-3--generate-the-talos-machine-config)
+  - [Step 4 — Apply the config to each node](#step-4--apply-the-config-to-each-node)
+  - [Step 5 — Bootstrap the cluster](#step-5--bootstrap-the-cluster)
+  - [Step 6 — Get kubeconfig and verify](#step-6--get-kubeconfig-and-verify)
+  - [Step 7 — Create the internal CA](#step-7--create-the-internal-ca)
+  - [Step 8 — Create namespaces and the CA secret](#step-8--create-namespaces-and-the-ca-secret)
+  - [Step 9 — Create the StorageClass and PVs](#step-9--create-the-storageclass-and-pvs)
+  - [Step 10 — Install the ECK operator](#step-10--install-the-eck-operator)
+  - [Step 11 — Customise values.yaml](#step-11--customise-valuesyaml)
+    - [What's pre-tuned (so you don't have to think about it)](#whats-pre-tuned-so-you-dont-have-to-think-about-it)
+  - [Step 12 — Deploy the Elastic stack](#step-12--deploy-the-elastic-stack)
+  - [Step 13 — Get the elastic user password](#step-13--get-the-elastic-user-password)
+  - [Step 14 — Access Kibana](#step-14--access-kibana)
+    - [Via NodePort (production access)](#via-nodeport-production-access)
+    - [How NodePort routing actually works](#how-nodeport-routing-actually-works)
+    - [Via kubectl port-forward (dev / testing)](#via-kubectl-port-forward-dev--testing)
+    - [🚨 First thing to do in Kibana — set ILM policies for the observability data](#-first-thing-to-do-in-kibana--set-ilm-policies-for-the-observability-data)
+  - [Step 15 — Trust the CA on clients](#step-15--trust-the-ca-on-clients)
+  - [Step 16 — Enrolling external Elastic Agents](#step-16--enrolling-external-elastic-agents)
+  - [Maintenance](#maintenance)
+    - [Upgrading Talos](#upgrading-talos)
+      - [What each `kubectl drain` flag does](#what-each-kubectl-drain-flag-does)
+      - [`--reboot-mode powercycle`](#--reboot-mode-powercycle)
+    - [Upgrading the ECK operator](#upgrading-the-eck-operator)
+    - [Upgrading the Elastic Stack](#upgrading-the-elastic-stack)
+    - [Changing a configuration value (Kibana / Elasticsearch)](#changing-a-configuration-value-kibana--elasticsearch)
+    - [Adding secrets (the Elasticsearch keystore)](#adding-secrets-the-elasticsearch-keystore)
+    - [Adding an S3 snapshot repository](#adding-an-s3-snapshot-repository)
+    - [Rotating the internal CA](#rotating-the-internal-ca)
+  - [Troubleshooting](#troubleshooting)
+  - [FAQ](#faq)
+  - [License](#license)
 
 ---
 
@@ -481,12 +507,12 @@ The file is heavily commented — every non-trivial setting has an inline explan
 | `kibana.lan` | DNS name you'll use for Kibana, or delete this `dns:` line |
 | `fleet.lan` | DNS name you'll use for Fleet Server, or delete this `dns:` line |
 
-> 🛈 **Why the DNS names matter** (they actually do double duty):
+> 🛈 **Where the node IPs end up in the config** (they're used in two places):
 >
-> 1. **TLS SubjectAltNames.** They become SAN entries on the leaf certificates ECK signs with your CA. When a client connects to `https://elastic.lan:30920`, TLS validation checks whether `elastic.lan` is in the cert's SAN list. If it's not, the handshake fails.
-> 2. **Default Fleet outputs for externally-enrolled agents.** The Kibana config declares two Fleet outputs and two Fleet Server hosts — one set pointing at the in-cluster `.svc` DNS (for agents running inside Kubernetes), and one pointing at `https://elastic.lan:30920` / `https://fleet.lan:30822` (the NodePort addresses). The NodePort versions are `is_default: true`, so when someone enrolls an agent from OUTSIDE the cluster via the Kibana UI, they automatically get the NodePort URL as the default — no manual override needed.
+> 1. **TLS SubjectAltNames.** The three IPs become SAN entries on the leaf certificates ECK signs with your CA. When a client connects to `https://10.0.0.11:30920`, TLS validation checks that `10.0.0.11` is in the cert's SAN list. If it's not, the handshake fails.
+> 2. **Default Fleet outputs for newly enrolled agents.** The Kibana config declares two Fleet outputs and two Fleet Server hosts. The DEFAULT (`is_default: true`) is an entry listing ALL THREE NODE IPS — `https://10.0.0.11:30920`, `https://10.0.0.12:30920`, `https://10.0.0.13:30920`. Every newly enrolled agent receives all three and fails over between them if one is unreachable, so you get de-facto HA across all three nodes without any external load balancer. Same deal for Fleet Server on port 30822.
 >
-> Point a real DNS record (internal company DNS, hosts file, etc.) at one of your node IPs (or a load balancer distributing across all three), and the whole chain just works: TLS verifies, Fleet hands agents the right URL, and clients can move between node IPs transparently.
+> 🛈 **Optional DNS names.** `elastic.lan` / `kibana.lan` / `fleet.lan` are placeholders — delete them, replace them with your company's internal DNS, or add them alongside the IPs. Any DNS name you add here MUST also be added to the corresponding `subjectAltNames` block so TLS verification accepts it. If you set up DNS later, clients can move between IPs and DNS interchangeably without re-issuing the certs.
 
 ### What's pre-tuned (so you don't have to think about it)
 
@@ -619,29 +645,54 @@ This is convenient for first-time exploration but not a production pattern — i
 
 **Do this on day one, before your cluster fills up.**
 
-Our Elastic Agent DaemonSet runs the Kubernetes integration on every node, which pulls metrics every few seconds (pod state, node stats, container stats, network stats, events) AND ships every container log from every pod in the cluster. On a quiet 3-node cluster this easily produces **several GiB of data per day** — and your `/var/mnt/data` PVs are only 100 GiB. Without an Index Lifecycle Management (ILM) policy, these indices grow forever and eventually fill your disks.
+Our Elastic Agent DaemonSet runs the Kubernetes integration on every node, which pulls metrics every few seconds (pod state, node stats, container stats, network stats, events) AND ships every container log from every pod in the cluster. On a quiet 3-node cluster this easily produces **several GiB of data per day**. Without sensible Index Lifecycle Management (ILM) policies your indices grow forever and eventually fill your disks — regardless of how big they are.
 
-**What to do, step by step:**
+**How ILM actually works in stock Elastic** ([ILM docs](https://www.elastic.co/guide/en/elasticsearch/reference/current/index-lifecycle-management.html)): Elastic ships two catch-all fallback policies, **`logs`** and **`metrics`**. Every data stream created by Fleet integrations (including our Kubernetes integration) is assigned one of those two by default. The built-in defaults have **no delete phase** — data stays forever. That's what we need to change.
 
-1. Open Kibana → **Stack Management** → **Index Lifecycle Policies**.
-2. Elastic ships default policies for each integration (`logs`, `metrics`, `logs@custom`, `metrics@custom`, and integration-specific ones like `metrics-kubernetes.*`). Find the ones your Agent is writing to by going to **Stack Management → Index Management → Data Streams** and looking at which data streams are receiving data.
-3. For each data stream, edit (or override) the ILM policy that governs its backing indices. A sane starting point:
-   - **Hot phase:** rollover at 50 GB or 7 days, whichever comes first.
-   - **Delete phase:** 14–30 days.
-4. Apply the policies. Existing indices roll over on the next rollover check; new indices pick them up immediately.
+**Step 1 — Edit the `logs` policy for a sensible retention curve.**
 
-**Where this matters most on a small cluster:**
+In Kibana, go to **Stack Management → Index Lifecycle Policies → logs → Edit policy**. Then:
 
-| Data stream | Default retention | Recommended |
-|---|---|---|
-| `metrics-kubernetes.*` | forever | 7–14 days (container/pod metrics are high-cardinality) |
-| `logs-kubernetes.*` | forever | 7–14 days (container logs are VERY high volume) |
-| `metrics-system.*` | forever | 14–30 days |
-| `metrics-elasticsearch.stack_monitoring.*` | forever | 14–30 days (nice to have a few weeks of historical Stack Monitoring) |
+- In the **Hot phase**, expand **Advanced settings** and **turn OFF "Use recommended defaults"**. This unlocks the rollover knobs.
+- Set **Maximum age** to `5d`. Rollover cadence should be a fraction of total retention — a 1:6 ratio gives you neat, mostly-sealed segments rather than one giant index that keeps getting rewritten.
+- Leave **Maximum primary shard size** at the default `50gb`.
+- Scroll down, **enable the Delete phase**, and set it to `30d` after rollover. So: rollover every 5 days, total retention 30 days.
+- Save.
 
-See the [ILM policy docs](https://www.elastic.co/guide/en/elasticsearch/reference/current/index-lifecycle-management.html) for the full configuration reference. If you skip this step, **the single biggest day-2 operational failure mode of this stack is disk-full** — the Kubernetes integration alone will fill 100 GiB of hot storage in about a month of normal cluster activity.
+**Step 2 — Edit the `metrics` policy similarly, but tighter and with downsampling.**
 
-> 🛈 **Tip:** Once ILM is in place, you can double-check retention is actually being enforced by running `GET _cat/indices?v&s=index&h=index,docs.count,store.size,creation.date.string` from Kibana Dev Tools. Indices older than your delete-phase threshold should vanish on the next lifecycle execution.
+Metrics are high-cardinality and lose value fast. Same idea:
+
+- In the **Hot phase → Advanced settings**, turn OFF recommended defaults.
+- **Maximum age** `1d` (rollover every day).
+- **Maximum primary shard size** can stay `50gb`.
+- **Enable Downsampling** with an interval of `1h`. This collapses many points per timestamp into one hourly summary — orders of magnitude fewer documents, most of the chart shape preserved. Huge savings for Kubernetes metrics you don't look at with sub-hour resolution anyway.
+- **Enable the Delete phase**, set it to `7d`. Metrics worth 7 days of granular + 7 days of downsampled is plenty for operational dashboards.
+- Save.
+
+**Step 3 — Force immediate rollover of all existing data streams.**
+
+This is the critical step almost every tutorial skips. When you edit an ILM policy, **existing backing indices keep the OLD policy** until they rollover naturally — which with Elastic's 30-day default rollover could mean nothing happens for a month. Force a lazy rollover across every data stream right now:
+
+```bash
+ELASTIC_PW=$(kubectl -n elastic-stack get secret elasticsearch-es-elastic-user \
+  -o go-template='{{.data.elastic | base64decode}}')
+
+for stream in $(curl --cacert ca/ca.crt -s -u "elastic:${ELASTIC_PW}" \
+  "https://10.0.0.11:30920/_data_stream" | jq -r '.data_streams[].name'); do
+  echo "rolling over $stream"
+  curl --cacert ca/ca.crt -s -u "elastic:${ELASTIC_PW}" \
+    -X POST "https://10.0.0.11:30920/${stream}/_rollover?lazy" >/dev/null
+done
+```
+
+The `?lazy` flag means "create the new backing index on the NEXT write event" — no interrupted ingest, no duplicate docs, no manual disruption. Every data stream picks up its edited ILM policy immediately after its next write.
+
+**Step 4 — (Optional, only if needed) per-integration policies.**
+
+If a single integration produces an overwhelming amount of data (say, containers that log tens of thousands of lines per second), you can create a dedicated ILM policy and attach it to just that data stream. But for most deployments, tuning `logs` and `metrics` once is enough — everything else inherits sane defaults.
+
+> 🛈 **If you skip this step entirely, the single biggest day-2 failure mode of this stack is disk-full.** The Kubernetes integration alone can eat a 100 GiB PV in a few weeks of normal cluster activity, and once Elasticsearch hits its disk watermarks it starts refusing writes and eventually flipping indices to read-only. A 15-minute tour through the ILM UI now saves you a 2 AM incident later.
 
 ---
 
@@ -680,17 +731,18 @@ After trust is set up, browser warnings disappear and every `curl` works without
 
 Agents running **inside** the cluster are already enrolled via the `eck-agent` policy — no action needed. To enrol an agent **outside** the cluster (a laptop, a server in another subnet):
 
-```bash
-# From Kibana → Fleet → Agent policies → "Elastic Agent on ECK policy" → Add agent
-#   → copy the enrollment token
+1. In Kibana → **Fleet → Agent policies** → pick the policy you want the agent to join → **Add agent** → copy the enrollment token.
+2. Note what Kibana shows you as the Fleet Server URL — because the default Fleet Server host we pre-configured in `values.yaml` is a list of all three node NodePort URLs, Kibana will hand your new agent a URL like `https://10.0.0.11:30822` automatically. If you run the agent in a different network segment and IP reachability is an issue, pick whichever of the three node IPs is actually reachable from where the agent lives.
+3. Install and enroll the agent:
+   ```bash
+   sudo elastic-agent install \
+     --url=https://10.0.0.11:30822 \
+     --enrollment-token=${token} \
+     --certificate-authorities=ca/ca.crt
+   ```
+   The `--certificate-authorities` flag tells the agent to trust your internal CA, so the TLS handshake with Fleet Server succeeds. No `--insecure` needed, no custom SAN work required beyond what ECK already baked into the cert.
 
-sudo elastic-agent install \
-  --url=https://10.0.0.11:30822 \
-  --enrollment-token=${token} \
-  --certificate-authorities=ca/ca.crt
-```
-
-The `--certificate-authorities` flag tells the agent to trust your internal CA, so the TLS handshake with Fleet Server succeeds. No `--insecure` needed, no custom SAN work required beyond what ECK already baked into the cert.
+**Why you didn't have to do anything in the Kibana UI to set this up:** our `values.yaml` pre-declares the default Fleet output and default Fleet Server host as lists of all three node IPs on the NodePort. That means every newly enrolled agent — whether from the Kibana UI or via `elastic-agent install` — automatically receives all three URLs as possible Fleet Server / data-ingest targets, and the agent's own load balancer fails over between them if one becomes unreachable. Effectively you've got HA for agent ingest across all three nodes without touching an external load balancer.
 
 ---
 
@@ -779,7 +831,7 @@ Every non-trivial setting in your stack lives in `kubernetes/eck-stack/values.ya
      --namespace elastic-stack \
      --values kubernetes/eck-stack/values.yaml
    ```
-3. **ECK picks up the change and does a rolling restart automatically.** For Elasticsearch it drains shards before restarting each node; for Kibana it rolls the Deployment; for Fleet Server it rolls the Agent pods. All of this is orchestrated by the operator — you don't touch `kubectl delete pod`.
+3. **ECK picks up the change and restarts the pods.** For Elasticsearch it does a true rolling restart — drains shards, restarts one node at a time, waits for green, moves on. For Kibana it recreates all pods at once (Kibana cannot be upgraded with a rolling restart because the running replicas would see inconsistent migration state — ECK deletes and replaces them, causing a brief UI downtime of a few seconds). Fleet Server's pods are rolled one at a time. All of this is orchestrated by the operator — you don't touch `kubectl delete pod`.
 4. **Watch it happen:**
    ```bash
    kubectl -n elastic-stack get pods -w
