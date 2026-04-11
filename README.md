@@ -7,7 +7,7 @@ A hands-on guide to running a **production-ready, easy-to-maintain 3-node Elasti
 
 > 🧪 **Tested end-to-end with 3 Azure VMs.** Every step in this guide was walked through by a fresh user on a new cluster before publishing, specifically to catch the "wait, what do I click here?" moments. A very similar setup has been running in production for multiple years, so the architecture is not experimental — just documented here in its most minimal, most teachable form.
 
-> ☁️ **Want to try it out in the cloud in 30 minutes?** See [README-azure.md](README-azure.md) for a click-through guide that provisions 3 Talos VMs on Azure from the official Talos VHD image. Once your VMs report "maintenance mode", jump to [Step 2](#step-2--locate-the-nodes-and-verify-disks) of this guide and keep going.
+> ☁️ **Want to try it out in the cloud in 30 minutes?** See [README-azure.md](README-azure.md) for a click-through guide that provisions 3 Talos VMs on Azure from the official Talos VHD image. Once your VMs report "maintenance mode", jump to [#set-your-cluster-variables](#set-your-cluster-variables) of this guide and keep going.
 
 **Why Talos + ECK instead of installing Elasticsearch directly on a Linux VM?**
 
@@ -22,7 +22,7 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
 
 ## Table of Contents
 
-- [ECK on Talos](#-eck-on-talos)
+- [ ECK on Talos](#-eck-on-talos)
   - [Table of Contents](#table-of-contents)
   - [What you get](#what-you-get)
   - [Optional extensions (not part of this guide, but easy to add later)](#optional-extensions-not-part-of-this-guide-but-easy-to-add-later)
