@@ -43,27 +43,46 @@
     },
     {
       "customType": "regex",
-      "description": "eck-operator Helm chart version in README install command",
-      "managerFilePatterns": ["/^README\\.md$/"],
-      "matchStrings": ["eck-operator\\s+--version\\s+(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"],
+      "description": "eck-operator Helm chart version in README install command and CI helm template",
+      "managerFilePatterns": [
+        "/^README\\.md$/",
+        "/^\\.github/workflows/ci\\.yaml$/"
+      ],
+      "matchStrings": ["eck-operator[\\s\\\\]+--version\\s+(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"],
       "datasourceTemplate": "helm",
       "registryUrlTemplate": "https://helm.elastic.co",
       "depNameTemplate": "eck-operator"
     },
     {
       "customType": "regex",
-      "description": "eck-stack Helm chart version in README install command",
-      "managerFilePatterns": ["/^README\\.md$/"],
-      "matchStrings": ["eck-stack\\s+--version\\s+(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"],
+      "description": "eck-stack Helm chart version in README install command and CI helm template",
+      "managerFilePatterns": [
+        "/^README\\.md$/",
+        "/^\\.github/workflows/ci\\.yaml$/"
+      ],
+      "matchStrings": ["eck-stack[\\s\\\\]+--version\\s+(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"],
       "datasourceTemplate": "helm",
       "registryUrlTemplate": "https://helm.elastic.co",
       "depNameTemplate": "eck-stack"
     },
     {
       "customType": "regex",
-      "description": "Talos version in README",
+      "description": "kube-state-metrics Helm chart version in README install command",
       "managerFilePatterns": ["/^README\\.md$/"],
-      "matchStrings": ["talos_version\\s*=\\s*\"(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)\""],
+      "matchStrings": ["kube-state-metrics[\\s\\\\]+--version\\s+(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"],
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://prometheus-community.github.io/helm-charts",
+      "depNameTemplate": "kube-state-metrics"
+    },
+    {
+      "customType": "regex",
+      "description": "Talos version variable across README files (lowercase + uppercase)",
+      "managerFilePatterns": [
+        "/^README\\.md$/",
+        "/^README-azure\\.md$/",
+        "/^README-template\\.md$/"
+      ],
+      "matchStrings": ["(?i)talos_version\\s*=\\s*\"(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)\""],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "siderolabs/talos"
     }

@@ -1030,7 +1030,9 @@ Agents running **inside** the cluster are already enrolled via the `eck-agent` p
 Always one node at a time. Flannel is bundled with Talos — it upgrades with the OS automatically, you don't install or upgrade a CNI separately.
 
 ```bash
-talos_version="v1.12.7"
+# Set this to the Talos version you're upgrading TO.
+# Find the latest release at https://github.com/siderolabs/talos/releases
+talos_version="vX.Y.Z"
 image="ghcr.io/siderolabs/installer:${talos_version}"
 
 # Upgrade node1 — change node_name/node_ip to node2/$node2_ip, then node3/$node3_ip afterwards
@@ -1068,9 +1070,11 @@ The drain command has an intimidating flag list. Here's what each one is actuall
 ### Upgrading the ECK operator
 
 ```bash
+# Set --version to the eck-operator chart version you're upgrading TO.
+# Latest: https://github.com/elastic/cloud-on-k8s/releases
 helm repo update
 helm upgrade eck-operator elastic/eck-operator \
-  --version 3.4.0 \
+  --version X.Y.Z \
   --namespace elastic-system \
   --values kubernetes/eck-operator/values.yaml
 ```
