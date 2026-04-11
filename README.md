@@ -1,4 +1,6 @@
-# <img src="assets/icon.png" alt="" height="56" valign="middle"> ECK on Talos
+<p align="center"><img src="assets/icon.png" alt="ECK on Talos icon" height="128"></p>
+
+# ECK on Talos
 
 [![CI](https://github.com/frederikb96/eck-on-talos/actions/workflows/ci.yaml/badge.svg)](https://github.com/frederikb96/eck-on-talos/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -22,7 +24,7 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
 
 ## Table of Contents
 
-- [ECK on Talos](#-eck-on-talos)
+- [ECK on Talos](#eck-on-talos)
   - [Table of Contents](#table-of-contents)
   - [What you get](#what-you-get)
   - [Optional extensions (not part of this guide, but easy to add later)](#optional-extensions-not-part-of-this-guide-but-easy-to-add-later)
