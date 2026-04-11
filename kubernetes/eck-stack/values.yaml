@@ -154,30 +154,14 @@ eck-elasticsearch:
         xpack.monitoring.collection.enabled: false
 
         # -------------------------------------------------------------------
-        # Audit logging — who touched what
+        # Audit logging
         # -------------------------------------------------------------------
-        # Elasticsearch audit logs record authentication attempts, failed
-        # accesses, configuration changes. They land in a separate log
-        # stream inside Elasticsearch and are queryable from Kibana.
-        #
-        # Docs: https://www.elastic.co/guide/en/elasticsearch/reference/current/audit-event-types.html
-        #
-        # Keep audit logging ON for any cluster that holds production
-        # data — it's small, cheap and invaluable during incident response.
-        xpack.security.audit.enabled: true
-
-        # The full audit event list is verbose. We include the ones that
-        # matter for security incidents and skip "access_granted" which
-        # floods the log on a busy cluster.
-        xpack.security.audit.logfile.events.include:
-          - access_denied
-          - anonymous_access_denied
-          - authentication_failed
-          - connection_denied
-          - tampered_request
-          - run_as_denied
-          - run_as_granted
-          - security_config_change
+        # Audit logging is a paid feature and is OFF by default here so
+        # Basic-license clusters don't emit a startup warning about it.
+        # To turn it on, follow Maintenance → "Enabling audit logs" in
+        # the README — it shows the exact snippet to paste in place of
+        # this block plus the one-time license activation.
+        xpack.security.audit.enabled: false
 
       podTemplate:
         spec:
@@ -367,19 +351,10 @@ eck-kibana:
     # -----------------------------------------------------------------------
     # Kibana audit logging
     # -----------------------------------------------------------------------
-    # Mirrors the Elasticsearch audit log at the Kibana API layer.
-    # Records logins, saved-object mutations, permission denials etc.
-    #
-    # Docs: https://www.elastic.co/guide/en/kibana/current/xpack-security-audit-logging.html
-    #
-    # ignore_filters removes noise: http_request events (every page click
-    # is a request), database reads (noisy), and the built-in service
-    # accounts. What remains is the actually interesting stuff.
-    xpack.security.audit.enabled: true
-    xpack.security.audit.ignore_filters:
-      - actions: [http_request]
-      - categories: [database]
-      - users: [elastic, kibana_system]
+    # Off by default for the same reason as the Elasticsearch side.
+    # See Maintenance → "Enabling audit logs" in the README for the
+    # snippet to paste in place of this block.
+    xpack.security.audit.enabled: false
 
     # -----------------------------------------------------------------------
     # Kibana Fleet preconfiguration — wire up Fleet Server + Agent policies

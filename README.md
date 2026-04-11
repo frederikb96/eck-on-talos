@@ -74,6 +74,8 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
     - [Adding an S3 snapshot repository](#adding-an-s3-snapshot-repository)
     - [Clean reset (wipe all Elastic data and start over)](#clean-reset-wipe-all-elastic-data-and-start-over)
     - [Multiple Fleet outputs (Platinum)](#multiple-fleet-outputs-platinum)
+    - [Activating the Enterprise Trial](#activating-the-enterprise-trial)
+    - [Enabling audit logs](#enabling-audit-logs)
     - [Rotating the internal CA](#rotating-the-internal-ca)
   - [Troubleshooting](#troubleshooting)
   - [FAQ](#faq)
@@ -727,6 +729,7 @@ $EDITOR kubernetes/eck-stack/values.yaml   # or: less, cat, whatever you prefer
 | Elastic Agent Kubernetes integration | ON | Cluster-wide observability on every node by default. |
 | Pod anti-affinity | Enforced (required) | Kubernetes scheduler refuses to place two pods of the same type on the same node. |
 | Fleet output | Single default (NodePort HA list) | Fleet Server and Elastic Agent inherit the default output. Splitting outputs per policy (e.g. in-cluster agents via `.svc`, external agents via a load balancer) is an opt-in for later — see [Multiple Fleet outputs](#multiple-fleet-outputs-platinum) in Maintenance. |
+| Audit logging (ES + Kibana) | Off by default | Audit logging is a paid feature, so `xpack.security.audit.enabled: false` ships in both sections of `values.yaml` and a Basic cluster boots without any audit-related warnings. To turn it on after activating a license, see [Maintenance → Enabling audit logs](#enabling-audit-logs). |
 
 If your VMs are bigger than 16 GiB, just raise `resources.limits.memory` on the Elasticsearch section of `values.yaml` — Elasticsearch's auto-heap follows the memory limit automatically (see [Sizing the VMs](#sizing-the-vms-ram-budget-per-node) in Prerequisites for the numbers). Nothing else needs to change.
 
@@ -1205,58 +1208,38 @@ See the [Elasticsearch S3 repository docs](https://www.elastic.co/guide/en/elast
 >
 > **Do not run this on a healthy cluster you care about.** If you just need to change a running value, see [Changing a configuration value](#changing-a-configuration-value-kibana--elasticsearch) instead.
 
-Four phases: uninstall the Helm releases, wipe the data disks with a privileged Job per node, delete and re-create the local PVs, re-install the Helm releases from the same repo files.
+Three phases: uninstall the Helm releases, wipe the data disks with a privileged Job per node, delete and re-create the local PVs. Then re-run Step 11 and Step 13 to reinstall the stack from the same repo files.
 
 ```bash
-# Phase 1 — tear down the stack. ECK deletes StatefulSets, pods, and the
-# auto-generated PVCs on its way out. PVs stay (reclaimPolicy: Retain).
-# kube-state-metrics is a separate Helm release and needs its own uninstall,
-# even though it lives in the same namespace.
+# Phase 1 — tear down the stack. ECK deletes StatefulSets, pods, and
+# the auto-generated PVCs on its way out. PVs stay (reclaimPolicy:
+# Retain). kube-state-metrics is a separate Helm release and needs
+# its own uninstall, even though it lives in the same namespace.
 helm -n elastic-stack uninstall eck-stack
 helm -n elastic-stack uninstall kube-state-metrics
 
-# Wait until all elastic-stack pods are actually gone (not just Terminating).
+# Wait until all elastic-stack pods are actually gone.
 kubectl -n elastic-stack wait --for=delete pods --all --timeout=3m || true
 
-# Phase 2 — wipe /var/mnt/data on every node.
-# Creates a temporary eck-cleanup namespace with three Jobs, each pinned
-# to one node via nodeSelector. Each Job runs busybox, bind-mounts
-# /var/mnt/data, and `rm -rf`s every entry except lost+found.
+# Phase 2 — wipe /var/mnt/data on every node via a privileged Job
+# pinned to each node. Each Job runs busybox, bind-mounts /var/mnt/data,
+# and `rm -rf`s every entry except lost+found. Check each job's log
+# for the "Before" / "After" listings to confirm what was wiped.
 kubectl apply -f kubernetes/cleanup/wipe-data.yaml
-
-# Wait for all three Jobs to complete.
 kubectl -n eck-cleanup wait --for=condition=Complete jobs --all --timeout=2m
-
-# Eyeball what they deleted (the "Before" / "After" listings tell you
-# exactly which directories were wiped on which node).
 for j in wipe-node1 wipe-node2 wipe-node3; do
-  echo "--- $j"
-  kubectl -n eck-cleanup logs job/$j
+  echo "--- $j"; kubectl -n eck-cleanup logs job/$j
 done
-
-# Delete the cleanup namespace (and the Jobs inside it).
 kubectl delete -f kubernetes/cleanup/wipe-data.yaml
 
 # Phase 3 — the old PVs still point at the node paths via nodeAffinity,
-# but their CSI state is "Released" from the previous PVCs. Delete them
-# and re-apply the storage YAML so they come back Available.
+# but their CSI state is "Released" from the previous PVCs. Delete
+# them and re-apply the storage YAML so they come back Available.
 kubectl delete pv es-data-node1 es-data-node2 es-data-node3
 kubectl apply -f kubernetes/storage/
-
-# Phase 4 — re-install kube-state-metrics, then the stack. Same commands as
-# Step 11 and Step 13 — nothing special. The operator reconciles everything
-# from scratch against the freshly-wiped disks.
-helm upgrade --install kube-state-metrics prometheus-community/kube-state-metrics \
-  --version 7.2.2 \
-  --namespace elastic-stack
-
-helm upgrade --install eck-stack elastic/eck-stack \
-  --version 0.18.1 \
-  --namespace elastic-stack \
-  --values kubernetes/eck-stack/values.yaml
 ```
 
-Then wait for everything green using the same four `kubectl wait` commands from Step 13.
+**Phase 4 — reinstall from scratch.** Re-run [Step 11](#step-11--install-kube-state-metrics) to deploy `kube-state-metrics`, then [Step 13](#step-13--deploy-the-elastic-stack) to deploy the Elastic stack. The operator reconciles everything from scratch against the freshly-wiped disks.
 
 **Why wipe the disks at all?** The local PVs point at `/var/mnt/data` directly. Deleting a PVC / PV in Kubernetes is a metadata-only operation — the files on the data disk are **not touched**. If you simply re-roll the stack without wiping, the new Elasticsearch pods load the old state from the previous cluster (different cluster UUID, different node IDs) and either refuse to start or silently load stale data. Wiping between runs is the only way to guarantee a truly clean reset.
 
@@ -1274,27 +1257,9 @@ On the default Basic license both the Fleet Server pods and the DaemonSet Elasti
 1. **You added a real load balancer in front of the nodes.** Now external traffic flows through `lb.example.com:30920`, but you want in-cluster Fleet Server and Agent pods to use the short `.svc` URL instead of looping through the LB.
 2. **You want external agents on separate machines** (laptops, bare-metal servers, IoT) to receive their own output list — maybe a different LB, maybe a DNS name with a TTL, maybe a read-only mirror cluster.
 
-Both of these require **per-policy output assignment**, which is [gated at the `platinum` licence tier](https://www.elastic.co/guide/en/fleet/current/agent-policy.html) in Kibana's Fleet plugin.
+Both of these require **per-policy output assignment**, which is a paid feature in Kibana's Fleet plugin. You'll need a real license or the 30-day Enterprise Trial — see [Activating the Enterprise Trial](#activating-the-enterprise-trial) below.
 
-**How to activate a 30-day trial** (do NOT ship a guide that relies on this — the trial expires and then per-policy outputs break):
-
-```bash
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: eck-trial-license
-  namespace: elastic-system
-  labels:
-    license.k8s.elastic.co/type: enterprise_trial
-  annotations:
-    elastic.co/eula: accepted
-EOF
-```
-
-The ECK operator picks this up and calls `POST /_license/start_trial?acknowledge=true` against the Elasticsearch cluster. Enterprise Trial unlocks every feature Elastic sells — Platinum is included. After 30 days, stack features gated above Basic enter a [degraded mode](https://www.elastic.co/guide/en/elastic-stack-overview/current/license-expiration.html) and your preconfigured Fleet policies stop being created on restart. Trials are one-per-cluster — you cannot restart the clock by re-applying the secret. **This guide does NOT assume a trial is active** — the shipped values.yaml works forever on Basic.
-
-**Editing `xpack.fleet.agentPolicies` to split outputs (Platinum only):**
+**Editing `xpack.fleet.agentPolicies` to split outputs:**
 
 ```yaml
 # inside eck-kibana.spec.config, under xpack.fleet.agentPolicies
@@ -1313,6 +1278,112 @@ The ECK operator picks this up and calls `POST /_license/start_trial?acknowledge
 ```
 
 External agents you later enroll against a *different* policy (created via the Kibana UI or the Fleet API) can then point at `external-es` or any other output you define. `data_output_id` and `monitoring_output_id` must be identical within a single policy — Kibana rejects them being different ([`kibana/.../fleet-settings.md`](https://www.elastic.co/guide/en/kibana/current/fleet-settings-kb.html)).
+
+### Activating the Enterprise Trial
+
+A few of the sections below (audit logging, multiple Fleet outputs) rely on features that aren't included in the default Basic license. ECK ships a one-click way to turn on a 30-day Enterprise Trial that unlocks every Elastic feature for evaluation. Apply this secret and ECK calls `POST /_license/start_trial` against your cluster for you:
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: eck-trial-license
+  namespace: elastic-system
+  labels:
+    license.k8s.elastic.co/type: enterprise_trial
+  annotations:
+    elastic.co/eula: accepted
+EOF
+```
+
+Verify the license is active:
+
+```bash
+elastic_pw=$(kubectl -n elastic-stack get secret elasticsearch-es-elastic-user -o go-template='{{.data.elastic | base64decode}}')
+curl --cacert ca/ca.crt -u "elastic:$elastic_pw" "https://${node1_ip}:30920/_license" | jq '.license.type'
+# "trial"
+```
+
+Trials are one-per-cluster and cannot be reset by re-applying the secret. When you're ready for production, buy a license and apply it the ECK way — see the [ECK licensing docs](https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-licensing.html) for the format.
+
+> 🛈 **Kibana needs a pod restart after a license change.** Elasticsearch picks the license up dynamically, but Kibana evaluates some feature flags (notably audit logging) once at plugin setup time. Roll Kibana after activating the trial (or applying any new license):
+>
+> ```bash
+> kubectl -n elastic-stack delete pod -l kibana.k8s.elastic.co/name=kibana
+> ```
+
+### Enabling audit logs
+
+A full audit trail of who did what in both Elasticsearch and Kibana — failed logins, successful logins, role / user changes, saved-object creation / modification / deletion, access denials, request tampering. Events land in the same Elasticsearch cluster and are queryable from Kibana Discover like any other log.
+
+Audit logging is a paid feature — activate a license first via [Activating the Enterprise Trial](#activating-the-enterprise-trial) above.
+
+**How it works:** ECK's stack monitoring (which you already enabled via `spec.monitoring.logs`) attaches a Filebeat sidecar to every Elasticsearch and Kibana pod. That sidecar tails `*_audit.json` on the pod's log volume and ships the events into the `filebeat-9.3.2` data stream with `event.dataset: elasticsearch.audit` or `event.dataset: kibana.audit`. No Filebeat config to write, no Fleet integration to install — just flip the two flags in `values.yaml`.
+
+**Elasticsearch side** — replace the audit block in the `eck-elasticsearch.spec.nodeSets[0].config:` section with:
+
+```yaml
+# Audit logging docs:
+# https://www.elastic.co/guide/en/elasticsearch/reference/current/audit-event-types.html
+xpack.security.audit.enabled: true
+
+# Only log the events that matter for a security incident. Two
+# defaults we deliberately leave out:
+#   - access_granted: fires on every successful read; drowns signal.
+#   - anonymous_access_denied: Kibana's session probe hits
+#     /_security/user/_has_privileges unauthenticated 50-100x/min.
+xpack.security.audit.logfile.events.include:
+  - access_denied          # tried to touch an index without privilege
+  - authentication_failed  # wrong password / bad API key
+  - connection_denied      # IP filter / TLS handshake rejection
+  - tampered_request       # request integrity check failed
+  - run_as_denied          # privilege escalation blocked
+  - run_as_granted         # privilege escalation actually used
+  - security_config_change # role / user / role-mapping / API key CRUD
+```
+
+**Kibana side** — replace the audit block in the `eck-kibana.spec.config:` section with:
+
+```yaml
+# Audit logging docs:
+# https://www.elastic.co/guide/en/kibana/current/xpack-security-audit-logging.html
+xpack.security.audit.enabled: true
+
+# Drop the two big sources of noise:
+#   - action=http_request: fires on every authenticated page click.
+#   - type=access: drops ALL read operations (saved_object_get / find,
+#     connector_find, space_get). Kibana's own startup alone emits
+#     hundreds of these per pod fetching its internal saved objects.
+# What survives is mutations (create/update/delete) and user_login.
+xpack.security.audit.ignore_filters:
+  - actions: [http_request]
+  - types: [access]
+```
+
+> 🛈 **Gotcha when tuning the Kibana filter later** — don't add a standalone `users: [...]` entry. Kibana's filter engine skips the user check when an event has no `user.name` (failed logins and other pre-auth events), which combined with all-other-fields-undefined makes the rule match everything. If you need to filter by user, always combine `users:` with at least one of `actions:` / `categories:` / `types:` in the same rule, e.g. `{actions: [saved_object_create], users: [kibana_system]}`.
+
+Apply the changes — same flow as any other values edit, see [Changing a configuration value](#changing-a-configuration-value-kibana--elasticsearch). ECK rolls Elasticsearch and Kibana; events start flowing after the roll completes. If you need to poke at the raw files directly (e.g. troubleshooting), they live at `/usr/share/elasticsearch/logs/elasticsearch_audit.json` and `/usr/share/kibana/logs/kibana_audit.json` inside the pods.
+
+**Querying audit events in Kibana Discover:**
+
+Both pipelines end up in the same data stream and are disambiguated by `event.dataset`. Open **Kibana → Discover**, pick (or create) a data view matching `filebeat-*`, and try:
+
+```text
+# Anything audit-related
+event.dataset: (elasticsearch.audit or kibana.audit)
+
+# Kibana logins (successes and failures)
+event.dataset: kibana.audit and event.action: user_login
+
+# Elasticsearch authentication failures (brute-force hunting)
+event.dataset: elasticsearch.audit and event.action: authentication_failed
+
+# Security config changes (role / user / privilege CRUD)
+event.dataset: elasticsearch.audit and event.action: (put_role or delete_role or put_user or delete_user or put_role_mapping or delete_role_mapping)
+```
+
+Useful Discover columns: `event.action`, `event.outcome`, `user.name`, `source.ip`, `url.original` (ES side), `message` (Kibana side). Kibana 9.x does not ship a prebuilt audit dashboard — build your own on top of a saved search when you need one.
 
 ### Rotating the internal CA
 
