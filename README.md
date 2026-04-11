@@ -45,7 +45,7 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
   - [Step 3 — Generate the Talos machine config](#step-3--generate-the-talos-machine-config)
   - [Step 4 — Apply the config to each node](#step-4--apply-the-config-to-each-node)
   - [Step 5 — Bootstrap the cluster](#step-5--bootstrap-the-cluster)
-  - [Step 6 — Get kubeconfig and verify](#step-6--get-kubeconfig-and-verify)
+  - [Step 6 — Verify all three nodes are Ready](#step-6--verify-all-three-nodes-are-ready)
   - [Step 7 — Create the internal CA](#step-7--create-the-internal-ca)
   - [Step 8 — Create namespaces and the CA secret](#step-8--create-namespaces-and-the-ca-secret)
   - [Step 9 — Create the StorageClass and PVs](#step-9--create-the-storageclass-and-pvs)
@@ -393,10 +393,13 @@ From the repo root, run `talosctl gen config` pointing at node1's IP as the clus
 
 ```bash
 talosctl gen config "$cluster_name" "https://$node1_ip:6443" \
+  --talos-version v1.11 \
   --additional-sans "$node1_ip,$node2_ip,$node3_ip" \
   --config-patch @talos/patches/common.yaml \
   --output-dir _out
 ```
+
+> 🛈 **Why `--talos-version v1.11`?** Starting with Talos 1.12, `gen config` emits a separate `HostnameConfig` document for the node hostname — which conflicts with the per-node `machine.network.hostname` in `talos/nodes/node<N>.yaml` and causes `apply-config` to fail with `static hostname is already set in v1alpha1 config`. Pinning the generator to v1.11 keeps hostname in the main `v1alpha1` document where our patches already live. Talos 1.12+ nodes accept v1.11-style config fine — full backward compat.
 
 This produces:
 
@@ -478,28 +481,74 @@ Bootstrap etcd on **node1 only** (running this on more than one node will corrup
 talosctl bootstrap --nodes "$node1_ip" --endpoints "$node1_ip"
 ```
 
-Wait about a minute for the API server to come up. You can watch progress with:
+Now wait (up to 5 min) for Talos to finish the bootstrap, generate the kubeconfig, start the API server, and register node1. This block polls from the **client** side — it fetches the kubeconfig as soon as Talos writes it, then `kubectl get nodes` until node1 shows `Ready`. On timeout it dumps the recent Talos dmesg so you can see what's going on:
 
 ```bash
-talosctl -n "$node1_ip" dmesg -f
-# Ctrl-C when you see "kubernetes bootstrap completed"
+echo "⏳ waiting for kubeconfig..."
+until talosctl kubeconfig --nodes "$node1_ip" --endpoints "$node1_ip" ./kubeconfig 2>/dev/null; do
+  sleep 5
+done
+echo "✅ kubeconfig is ready"
+export KUBECONFIG="$PWD/kubeconfig"
+
+echo "⏳ waiting for node1 Ready..."
+for i in $(seq 1 60); do
+  kubectl get nodes 2>/dev/null | grep -q "^node1 .*Ready" && break
+  sleep 5
+done
+
+if kubectl get nodes 2>/dev/null | grep -q "^node1 .*Ready"; then
+  echo "✅ bootstrap completed"
+  kubectl get nodes
+else
+  echo "⏱️  node1 not Ready after 5 min — recent dmesg tail:"
+  talosctl -n "$node1_ip" dmesg 2>/dev/null | tail -60
+fi
 ```
+
+**Expected timing:** ~60-90 s on bare metal, ~2-3 min on cloud VMs. Node 2 and node 3 join automatically once node 1's API server is reachable — you usually see all three `Ready` within a minute of node 1 going green.
+
+> 🛈 **Want to watch the bootstrap unfold live?** Open a second terminal (or substitute `$node2_ip` / `$node3_ip` to watch the other nodes join):
+>
+> ```bash
+> talosctl -n "$node1_ip" dmesg -f          # follow kernel + Talos controller logs in real time
+> talosctl -n "$node1_ip" service           # list all Talos services with state + health
+> talosctl -n "$node1_ip" service etcd      # zoom into a specific service (e.g. etcd)
+> talosctl -n "$node1_ip" logs etcd         # raw etcd logs
+> talosctl -n "$node1_ip" logs kubelet      # raw kubelet logs
+> ```
+>
+> `dmesg -f` is what the wait loop falls back to when it times out — running it yourself gives the same view in real time. Ctrl-C to stop. Use the cheat sheet below to tell benign noise from actual problems.
+
+**While it's waiting, these Talos log lines are normal and should be ignored:**
+
+- `k8s.NodeApplyController: timeout` / `error getting node: nodes "node1" not found` — kube-apiserver still starting
+- `apiserver-kubelet-client: Authorization error` — RBAC bindings not installed yet
+- `KubePrism 127.0.0.1:7445: EOF` — local API proxy flapping during apiserver warm-up
+- `network.LinkSpecController: error enslaving/unslaving link "eth1"` — Azure Accelerated Networking SR-IOV VF noise, cosmetic only
+
+**These lines mean something is actually wrong:**
+
+- `service[etcd](Failed)` after the initial "Bootstrap requested" — real etcd failure, check the message
+- Static pods (`kube-apiserver`, `kube-controller-manager`, `kube-scheduler`) in a `CrashLoopBackOff` pattern — wrong installer image, PKI mismatch, or patch drift
+- `permission denied` / `no such file or directory` on volume mounts — UserVolumeConfig or diskSelector pointed at the wrong disk
+- Complete silence for 2+ min with no new log lines — node hung, check the hypervisor console
 
 ---
 
-## Step 6 — Get kubeconfig and verify
+## Step 6 — Verify all three nodes are Ready
+
+Step 5 already fetched `./kubeconfig` and exported `KUBECONFIG`. Just confirm all three nodes reached `Ready` (node 2 and node 3 join automatically once node 1's API server is up):
 
 ```bash
-talosctl kubeconfig --nodes "$node1_ip" --endpoints "$node1_ip" ./kubeconfig
-export KUBECONFIG="$PWD/kubeconfig"
-
+kubectl wait --for=condition=Ready nodes --all --timeout=5m
 kubectl get nodes
 # node1   Ready   control-plane   ...
 # node2   Ready   control-plane   ...
 # node3   Ready   control-plane   ...
 ```
 
-All three nodes should reach `Ready` within a couple of minutes. If they don't, see [Troubleshooting](#troubleshooting).
+If a node is stuck, see [Troubleshooting](#troubleshooting).
 
 > Flannel CNI comes built-in with Talos — you don't install a CNI, don't run `kubectl apply -f cilium.yaml`, don't configure anything. It just works.
 
@@ -1053,6 +1102,26 @@ ECK detects the new CA, re-signs all leaf certs, and triggers a rolling restart 
 ---
 
 ## Troubleshooting
+
+**`apply-config` fails with `static hostname is already set in v1alpha1 config`.**
+You ran `talosctl gen config` without `--talos-version v1.11`. Talos ≥1.12 emits a separate `HostnameConfig` document that collides with the `machine.network.hostname` in our per-node patches. Regenerate and refresh your talosctl context:
+
+```bash
+rm -rf _out
+talosctl config remove eck-cluster -y           # drop the stale context so merge doesn't auto-rename it to eck-cluster-1
+talosctl gen config "$cluster_name" "https://$node1_ip:6443" \
+  --talos-version v1.11 \
+  --additional-sans "$node1_ip,$node2_ip,$node3_ip" \
+  --config-patch @talos/patches/common.yaml \
+  --output-dir _out
+talosctl config merge _out/talosconfig          # new PKI, fresh eck-cluster context
+talosctl config endpoint "$node1_ip" "$node2_ip" "$node3_ip"
+talosctl config node "$node1_ip"
+```
+
+Then re-run `apply-config` from Step 4. Safe to do pre-bootstrap (no cluster state yet).
+
+> 🛈 **Why the `remove` step?** `talosctl config merge` never overwrites an existing context with the same name — it auto-renames the incoming one (`eck-cluster` → `eck-cluster-1`, `-2`, …). Removing the stale context first keeps the name clean. If you prefer to keep the renamed one, skip `remove` and add `talosctl config use eck-cluster-1` at the end instead.
 
 **Node stays `NotReady`, kubelet logs complain about CNI.**
 Talos's built-in Flannel needs cluster networking to come up. Check `talosctl -n <ip> dmesg -f` for errors. Most often this is a wrong interface name in your node patch — Talos tries to bind to the configured interface, can't, and stays stuck.

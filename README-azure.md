@@ -316,7 +316,7 @@ Two tiny Azure-isms that already match the repo defaults (nothing to edit):
 - Interface name inside Talos: `eth0` (accelerated networking default)
 - Default gateway: `10.0.0.1` (Azure subnet default)
 
-Now jump to **[Step 2 of the main guide](README.md#step-2--locate-the-nodes-and-verify-disks)**.
+Now jump to **main guide](README.md)** and skip the parts about booting from ISO or `dd`-ing from rescue — everything else applies as-is.
 
 ## Clean-up
 
