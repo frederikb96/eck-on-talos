@@ -7,6 +7,11 @@
   "MD032": false,
   "MD033": false,
   "MD036": false,
+  // MD039: the H1 embeds an <img> inline (`# <img...> ECK on Talos`), so
+  // TOC tools and AI completions keep extracting ` ECK on Talos` with a
+  // leading space and tripping this rule. The leading space is cosmetic
+  // and safe to ignore here.
+  "MD039": false,
   "MD040": false,
   "MD041": false,
   "MD049": false,
