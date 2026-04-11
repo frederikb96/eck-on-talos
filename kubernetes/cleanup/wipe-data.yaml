@@ -1,0 +1,133 @@
+---
+# DESTRUCTIVE — wipes all Elasticsearch data on every node.
+# Apply this ONLY as part of the Clean-Reset flow in the README's
+# Maintenance section, when you want the cluster to come back up
+# as a brand-new, empty stack. Do NOT apply this on a healthy cluster.
+#
+# It creates a temporary namespace + three privileged Jobs (one per
+# node) that bind-mount /var/mnt/data and recursively delete everything
+# inside except the ext4 lost+found directory. Each Job runs once on its
+# target node, logs what it removed, and exits. The whole namespace is
+# deleted after use.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: eck-cleanup
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: wipe-node1
+  namespace: eck-cleanup
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: node1
+      containers:
+        - name: wipe
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              echo "Before wipe on $(hostname):"
+              ls -la /data || true
+              find /data -mindepth 1 -maxdepth 1 ! -name 'lost+found' -exec rm -rf {} +
+              echo "After wipe on $(hostname):"
+              ls -la /data
+              echo DONE
+          securityContext:
+            runAsUser: 0
+            privileged: true
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          hostPath:
+            path: /var/mnt/data
+            type: Directory
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: wipe-node2
+  namespace: eck-cleanup
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: node2
+      containers:
+        - name: wipe
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              echo "Before wipe on $(hostname):"
+              ls -la /data || true
+              find /data -mindepth 1 -maxdepth 1 ! -name 'lost+found' -exec rm -rf {} +
+              echo "After wipe on $(hostname):"
+              ls -la /data
+              echo DONE
+          securityContext:
+            runAsUser: 0
+            privileged: true
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          hostPath:
+            path: /var/mnt/data
+            type: Directory
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: wipe-node3
+  namespace: eck-cleanup
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: node3
+      containers:
+        - name: wipe
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              echo "Before wipe on $(hostname):"
+              ls -la /data || true
+              find /data -mindepth 1 -maxdepth 1 ! -name 'lost+found' -exec rm -rf {} +
+              echo "After wipe on $(hostname):"
+              ls -la /data
+              echo DONE
+          securityContext:
+            runAsUser: 0
+            privileged: true
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          hostPath:
+            path: /var/mnt/data
+            type: Directory

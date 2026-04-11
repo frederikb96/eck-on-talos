@@ -42,6 +42,8 @@ Everything in this repo is declarative. To change anything:
 - **Upgrade Talos** → bump `talos_version` below, follow the upstream [Talos upgrade procedure](https://github.com/frederikb96/eck-on-talos#upgrading-talos)
 - **Upgrade the ECK operator** → bump the `--version` in the operator `helm upgrade` command from the upstream guide
 - **Rotate the internal CA** → follow the upstream [CA rotation procedure](https://github.com/frederikb96/eck-on-talos#rotating-the-internal-ca)
+- **Tune ILM retention** (do this on day one!) → follow the upstream [ILM policies step](https://github.com/frederikb96/eck-on-talos#-first-thing-to-do-in-kibana--set-ilm-policies-for-the-observability-data) to add delete phases to `logs@lifecycle`, `metrics@lifecycle`, `filebeat`, and `metricbeat`. Without this the observability data grows forever and eventually fills the data disks.
+- **Clean reset** (bootstrap gone wrong) → follow the upstream [Clean reset procedure](https://github.com/frederikb96/eck-on-talos#clean-reset-wipe-all-elastic-data-and-start-over) — wipes `/var/mnt/data` on every node and re-rolls the stack from the repo files.
 - **Add a Kibana/Fleet user** → Kibana → Stack Management → Users
 - **Add an external Elastic Agent** → Kibana → Fleet → Agent policies → copy token, install agent with `--certificate-authorities=ca/ca.crt`
 

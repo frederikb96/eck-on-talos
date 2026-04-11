@@ -14,7 +14,7 @@ A hands-on guide to running a **production-ready, easy-to-maintain 3-node Elasti
 - **No OS maintenance.** Talos has no SSH, no package manager, no drift. You never patch kernels or run `apt upgrade`. Upgrades are a single declarative command.
 - **No hand-tuning Elastic.** The ECK operator reconciles the cluster state from a single YAML file. Version upgrades, JVM settings, TLS, node roles — all declarative. Rolling restarts, certificate rotation and health checks happen automatically.
 - **One Git repo is the entire system.** The Talos config, storage layout, CA, and Elastic Stack live in version-controlled files. Nothing lives only on a server.
-- **Production patterns out of the box.** Self-monitoring (Stack Monitoring), Elastic Agent with the Kubernetes integration, audit logging, and a proper internal CA are all wired in.
+- **Production patterns out of the box.** Self-monitoring (Stack Monitoring), Elastic Agent with the Kubernetes integration, and a proper internal CA are all wired in.
 
 This guide is intentionally opinionated and keeps the moving parts to a minimum. No Terraform, no Flux, no cert-manager, no ingress controller — just `talosctl`, `kubectl` and `helm`.
 
@@ -50,17 +50,19 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
   - [Step 8 — Create namespaces and the CA secret](#step-8--create-namespaces-and-the-ca-secret)
   - [Step 9 — Create the StorageClass and PVs](#step-9--create-the-storageclass-and-pvs)
   - [Step 10 — Install the ECK operator](#step-10--install-the-eck-operator)
-  - [Step 11 — Review values.yaml](#step-11--review-valuesyaml)
+  - [Step 11 — Install kube-state-metrics](#step-11--install-kube-state-metrics)
+  - [Step 12 — Review values.yaml](#step-12--review-valuesyaml)
     - [What's pre-tuned (so you don't have to think about it)](#whats-pre-tuned-so-you-dont-have-to-think-about-it)
-  - [Step 12 — Deploy the Elastic stack](#step-12--deploy-the-elastic-stack)
-  - [Step 13 — Get the elastic user password](#step-13--get-the-elastic-user-password)
-  - [Step 14 — Access Kibana](#step-14--access-kibana)
+  - [Step 13 — Deploy the Elastic stack](#step-13--deploy-the-elastic-stack)
+  - [Step 14 — Get the elastic user password](#step-14--get-the-elastic-user-password)
+  - [Step 15 — Access Kibana](#step-15--access-kibana)
     - [Via NodePort (production access)](#via-nodeport-production-access)
     - [How NodePort routing actually works](#how-nodeport-routing-actually-works)
     - [Via kubectl port-forward (dev / testing)](#via-kubectl-port-forward-dev--testing)
     - [🚨 First thing to do in Kibana — set ILM policies for the observability data](#-first-thing-to-do-in-kibana--set-ilm-policies-for-the-observability-data)
-  - [Step 15 — Trust the CA on clients](#step-15--trust-the-ca-on-clients)
-  - [Step 16 — Enrolling external Elastic Agents](#step-16--enrolling-external-elastic-agents)
+    - [Next thing — check the Kubernetes overview dashboard](#next-thing--check-the-kubernetes-overview-dashboard)
+  - [Step 16 — Trust the CA on clients](#step-16--trust-the-ca-on-clients)
+  - [Step 17 — Enrolling external Elastic Agents](#step-17--enrolling-external-elastic-agents)
   - [Maintenance](#maintenance)
     - [Upgrading Talos](#upgrading-talos)
       - [What each `kubectl drain` flag does](#what-each-kubectl-drain-flag-does)
@@ -70,6 +72,8 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
     - [Changing a configuration value (Kibana / Elasticsearch)](#changing-a-configuration-value-kibana--elasticsearch)
     - [Adding secrets (the Elasticsearch keystore)](#adding-secrets-the-elasticsearch-keystore)
     - [Adding an S3 snapshot repository](#adding-an-s3-snapshot-repository)
+    - [Clean reset (wipe all Elastic data and start over)](#clean-reset-wipe-all-elastic-data-and-start-over)
+    - [Multiple Fleet outputs (Platinum)](#multiple-fleet-outputs-platinum)
     - [Rotating the internal CA](#rotating-the-internal-ca)
   - [Troubleshooting](#troubleshooting)
   - [FAQ](#faq)
@@ -83,9 +87,9 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
 - **2 Kibana replicas** with anti-affinity across nodes
 - **2 Fleet Server replicas** (for in-cluster agents and, optionally, external agents via NodePort)
 - **Elastic Agent DaemonSet** (one per node) running the Elastic Agent integration plus the Kubernetes integration for full cluster observability
+- **`kube-state-metrics`** deployed alongside the stack so the Kubernetes integration's `state_*` data streams (node/pod/deployment capacity and desired state) are populated out of the box — no empty dashboards
 - **Self-monitoring** — Stack Monitoring writes its metrics and logs back into the same cluster, no separate monitoring cluster required
 - **Internal CA** you fully control — ECK signs all HTTP certificates with it, so every client only has to trust one certificate
-- **Audit logging** enabled on Elasticsearch and Kibana
 - **NodePort services** for Elasticsearch (30920), Kibana (30601) and Fleet Server (30822), reachable on any node IP → de-facto HA without a load balancer
 
 ## Optional extensions (not part of this guide, but easy to add later)
@@ -118,6 +122,9 @@ eck-on-talos/
     ├── storage/
     │   ├── storageclass.yaml          ← local-storage StorageClass
     │   └── pvs.yaml                   ← 3 local PVs pinned to node1/node2/node3
+    ├── cleanup/
+    │   └── wipe-data.yaml             ← 3 Jobs that wipe /var/mnt/data on each node
+    │                                    (used only by the Clean reset procedure)
     ├── eck-operator/values.yaml       ← Helm values for the ECK operator
     └── eck-stack/values.yaml          ← Helm values for ES + Kibana + Fleet + Agent
 ```
@@ -604,7 +611,7 @@ Both namespaces get the `pod-security.kubernetes.io/enforce: privileged` label. 
 
 ## Step 9 — Create the StorageClass and PVs
 
-> **What this step does:** Tells Kubernetes that `/var/mnt/data/elasticsearch` on each node is a storage volume, so Elasticsearch pods can use it for their data.
+> **What this step does:** Tells Kubernetes that `/var/mnt/data` on each node (the mount point Talos created for the dedicated data disk) is a storage volume, so Elasticsearch pods can use it for their data.
 >
 > **Docs:** [Kubernetes Local Volumes](https://kubernetes.io/docs/concepts/storage/volumes/#local) · [ECK volumeClaimTemplates](https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-volume-claim-templates.html)
 
@@ -613,7 +620,7 @@ We use the Kubernetes native **local volumes** pattern:
 | Object | What it does |
 |---|---|
 | `StorageClass: local-storage` | Says "no dynamic provisioner; volumes are pre-created by hand" and sets `volumeBindingMode: WaitForFirstConsumer` so a PVC only binds once a pod wants to use it. |
-| `PersistentVolume: es-data-node1` | A 100 GiB volume pinned to node1 via `nodeAffinity`, pointing at `/var/mnt/data/elasticsearch` on that node. |
+| `PersistentVolume: es-data-node1` | A 100 GiB volume pinned to node1 via `nodeAffinity`, pointing at `/var/mnt/data` on that node (the entire dedicated data disk — Elasticsearch creates its own `nodes/` subtree inside). |
 | `PersistentVolume: es-data-node2` | Same, pinned to node2. |
 | `PersistentVolume: es-data-node3` | Same, pinned to node3. |
 
@@ -625,7 +632,7 @@ kubectl get storageclass
 kubectl get pv
 ```
 
-Each PV starts in the `Available` phase. When Elasticsearch is deployed (Step 12), the StatefulSet creates three PVCs. Because of `WaitForFirstConsumer`, the PVCs don't bind immediately — they wait until the scheduler picks a node for each pod. The scheduler sees the anti-affinity rules AND the PV nodeAffinities, picks one node per pod, and only then the PVC binds to the matching PV.
+Each PV starts in the `Available` phase. When Elasticsearch is deployed (Step 13), the StatefulSet creates three PVCs. Because of `WaitForFirstConsumer`, the PVCs don't bind immediately — they wait until the scheduler picks a node for each pod. The scheduler sees the anti-affinity rules AND the PV nodeAffinities, picks one node per pod, and only then the PVC binds to the matching PV.
 
 **The net effect:** Each Elasticsearch pod is locked to one node forever. Its data lives on that node's local disk. If the pod dies and gets recreated, Kubernetes puts it back on the same node because that's the only place its PVC is bound. Automatic data locality, zero CSI driver, zero Longhorn/Ceph/Mayastor.
 
@@ -648,7 +655,7 @@ helm upgrade --install eck-operator elastic/eck-operator \
   --namespace elastic-system \
   --values kubernetes/eck-operator/values.yaml
 
-kubectl -n elastic-system rollout status deploy/elastic-operator --timeout=2m
+kubectl -n elastic-system rollout status statefulset/elastic-operator --timeout=2m
 ```
 
 The operator pod should reach `1/1 Running` in under a minute. From this point on, everything you want in the cluster is declared as a YAML resource (`kind: Elasticsearch`, `kind: Kibana`, etc.) and the operator does the heavy lifting — no more `kubectl apply` of StatefulSets, no more manually-crafted ConfigMaps.
@@ -663,7 +670,35 @@ The operator pod should reach `1/1 Running` in under a minute. From this point o
 
 ---
 
-## Step 11 — Review values.yaml
+## Step 11 — Install kube-state-metrics
+
+> **What this step does:** Installs [`kube-state-metrics`](https://github.com/kubernetes/kube-state-metrics) — a small Deployment that scrapes the Kubernetes API and exposes cluster-wide state (node capacity, pod counts, deployment replicas, persistent volume status, …) as a Prometheus-format metrics endpoint. The Elastic Agent's Kubernetes integration then scrapes that endpoint to fill in the `metrics-kubernetes.state_*` data streams.
+>
+> **Docs:** [kube-state-metrics chart](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-state-metrics) · [Elastic Kubernetes integration overview](https://www.elastic.co/guide/en/integrations/current/kubernetes.html)
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+helm upgrade --install kube-state-metrics prometheus-community/kube-state-metrics \
+  --version 7.2.2 \
+  --namespace elastic-stack
+
+kubectl -n elastic-stack rollout status deploy/kube-state-metrics --timeout=2m
+```
+
+> 🛈 **Why this is a dedicated step, and why it matters for the dashboards.** The Elastic Kubernetes integration has **two independent data sources**:
+>
+> - **kubelet** — scraped directly on every node, gives you live **usage**: "node2 is using 242 millicores right now, working set is 8.4 GiB". These populate `metrics-kubernetes.node / pod / container / volume / system`.
+> - **kube-state-metrics** — scraped once per cluster, gives you **capacity and desired state**: "node2 has 8 CPU cores total, 62 GiB allocatable memory, room for 110 pods; deployment X wants 3 replicas and has 3 ready". These populate the `metrics-kubernetes.state_*` family (`state_node`, `state_pod`, `state_deployment`, `state_persistentvolume`, …).
+>
+> Kibana's built-in Kubernetes dashboards **join both sides** to draw their graphs. "CPU usage % by node" is `kubelet.cpu.usage.nanocores ÷ state_node.cpu.capacity.cores`. Without `kube-state-metrics`, the kubelet side still ships data but the capacity/state side is empty → every percentage panel renders blank and the overview dashboard looks broken. Installing it takes 30 seconds and fills in everything.
+
+> 🛈 **Why install it in `elastic-stack` and not `kube-system`.** The default `hosts` value in the Elastic Kubernetes integration is the unqualified DNS name `kube-state-metrics:8080`. Kubernetes resolves unqualified names through the pod's namespace search path, so an agent pod running in `elastic-stack` will look up `kube-state-metrics.elastic-stack.svc` first — which is exactly the Service this Helm install creates. Zero integration config changes needed. As a bonus, everything this guide installs lives in a single namespace: `helm uninstall` in the Clean reset procedure sweeps both the stack *and* `kube-state-metrics` in one go.
+
+---
+
+## Step 12 — Review values.yaml
 
 > **What this step does:** Takes a look at the Helm values file that defines your entire Elastic Stack, so you know what you're about to deploy.
 
@@ -686,17 +721,18 @@ $EDITOR kubernetes/eck-stack/values.yaml   # or: less, cat, whatever you prefer
 |---|---|---|
 | ES memory request == limit | `8Gi` == `8Gi` | Elasticsearch is allergic to memory pressure. Request==limit gives it "Guaranteed" QoS and locks the allocation. ECK auto-sizes the JVM heap to ~50% of this — no `ES_JAVA_OPTS` to fiddle with. |
 | Kibana / Fleet Server / Agent memory | request `1Gi`, no limit | Stateless services — they can burst freely under load without risk of OOM-kill. |
-| Elasticsearch audit logging | ON | Records auth attempts, permission denials, config changes. Searchable in Kibana. |
 | Kibana self-monitoring | ON | Stack Monitoring data ships back into the same cluster — one UI to rule them all. |
+| `server.publicBaseUrl` | `https://$node1_ip:30601` | The public URL Kibana uses in callbacks / links. Defaults to your node1 NodePort URL — replace with your LB / DNS name if you have one (edit `eck-kibana.config.server.publicBaseUrl` in `values.yaml`). |
 | Fleet Server replicas | 2 | HA, spread across two nodes via anti-affinity. |
 | Elastic Agent Kubernetes integration | ON | Cluster-wide observability on every node by default. |
 | Pod anti-affinity | Enforced (required) | Kubernetes scheduler refuses to place two pods of the same type on the same node. |
+| Fleet output | Single default (NodePort HA list) | Fleet Server and Elastic Agent inherit the default output. Splitting outputs per policy (e.g. in-cluster agents via `.svc`, external agents via a load balancer) is an opt-in for later — see [Multiple Fleet outputs](#multiple-fleet-outputs-platinum) in Maintenance. |
 
 If your VMs are bigger than 16 GiB, just raise `resources.limits.memory` on the Elasticsearch section of `values.yaml` — Elasticsearch's auto-heap follows the memory limit automatically (see [Sizing the VMs](#sizing-the-vms-ram-budget-per-node) in Prerequisites for the numbers). Nothing else needs to change.
 
 ---
 
-## Step 12 — Deploy the Elastic stack
+## Step 13 — Deploy the Elastic stack
 
 > **What this step does:** Tells Helm to create Elasticsearch, Kibana, Fleet Server and Agent custom resources in the cluster. The ECK operator picks them up and reconciles them into the actual running stack.
 >
@@ -706,60 +742,91 @@ If your VMs are bigger than 16 GiB, just raise `resources.limits.memory` on the 
 helm upgrade --install eck-stack elastic/eck-stack \
   --version 0.18.1 \
   --namespace elastic-stack \
-  --values kubernetes/eck-stack/values.yaml \
-  --timeout 20m
+  --values kubernetes/eck-stack/values.yaml
 ```
 
-The first deploy takes a few minutes. Elasticsearch pods boot sequentially because they need to form the initial cluster state, then Kibana waits for Elasticsearch to be green, then Fleet Server waits for Kibana's Fleet API to be reachable, then the Elastic Agent DaemonSet waits for Fleet Server. Watch progress in a second terminal:
+Helm returns in under a second — it just hands the Elasticsearch / Kibana / Fleet / Agent CRs to the ECK operator and walks away. The operator does the real work in the background: Elasticsearch pods boot sequentially to form the initial cluster state, then Kibana waits for ES green, then Fleet Server waits for Kibana's Fleet API, then the Elastic Agent DaemonSet waits for Fleet Server.
+
+Watch progress in a second terminal:
 
 ```bash
 watch kubectl -n elastic-stack get pods,pvc,elasticsearch,kibana,agent
 ```
 
-Expected end state (your pod names will be slightly different):
+Or block until **all four components** report `.status.health=green`. ECK reconciles ES → Kibana → Fleet Server → Agent in strict order, so waiting on Agent implies the whole chain is up:
+
+```bash
+kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green elasticsearch/elasticsearch --timeout=15m
+kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green kibana/kibana --timeout=10m
+kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green agent/fleet-server --timeout=5m
+kubectl -n elastic-stack wait --for=jsonpath='{.status.health}'=green agent/eck-stack-eck-agent --timeout=5m
+```
+
+A fresh install takes a few minutes. If the stack hasn't gone green after ~10 minutes something is actually wrong — use the commands below to poke at it.
+
+> 🛈 **Debugging a stuck stack.** Four commands cover almost everything:
+>
+> ```bash
+> kubectl -n elastic-stack get events --sort-by='.lastTimestamp' --watch
+> kubectl -n elastic-system logs statefulset/elastic-operator -f
+> kubectl -n elastic-stack logs deploy/kibana-kb -c kibana --tail=50 | grep -iE "fleet|error|warn"
+> kubectl -n elastic-stack logs elasticsearch-es-default-0 -c elasticsearch --tail=50
+> ```
+>
+> - **Start with the event stream** — it shows the dependency chain in real time. Lines like "Delaying deployment of Elastic Agent as Kibana is not available yet" or "Readiness probe failed" during warm-up are normal and clear on their own.
+> - **If a specific pod is stuck** (`CrashLoopBackOff`, `ImagePullBackOff`, `Pending` for more than a minute or two) → `kubectl -n elastic-stack describe pod <pod>`. The Events section at the bottom of the describe output is where the real error lives — bad mount path, image pull failure, readiness probe, scheduling conflict.
+> - If you're wedged and just want to start over from an empty cluster, jump to [Clean reset](#clean-reset-wipe-all-elastic-data-and-start-over) in Maintenance.
+
+Expected end state (your pod suffixes will differ, but the counts and `READY` columns should match):
 
 ```
-NAME                     READY   STATUS    RESTARTS   AGE
-elasticsearch-es-default-0   1/1   Running   0   5m
-elasticsearch-es-default-1   1/1   Running   0   4m
-elasticsearch-es-default-2   1/1   Running   0   3m
-kibana-kb-<hash>             1/1   Running   0   3m
-kibana-kb-<hash>             1/1   Running   0   3m
-fleet-server-agent-<hash>    1/1   Running   0   2m
-fleet-server-agent-<hash>    1/1   Running   0   2m
-elastic-agent-agent-<hash>   1/1   Running   0   1m
-elastic-agent-agent-<hash>   1/1   Running   0   1m
-elastic-agent-agent-<hash>   1/1   Running   0   1m
+NAME                                      READY   STATUS    RESTARTS   AGE
+eck-stack-eck-agent-agent-5p96t           1/1     Running   0          40s
+eck-stack-eck-agent-agent-pldqr           1/1     Running   0          40s
+eck-stack-eck-agent-agent-tjbzs           1/1     Running   0          40s
+elasticsearch-es-default-0                3/3     Running   0          2m
+elasticsearch-es-default-1                3/3     Running   0          2m
+elasticsearch-es-default-2                3/3     Running   0          2m
+fleet-server-agent-668d84b5c5-mh9sl       1/1     Running   0          40s
+fleet-server-agent-668d84b5c5-rqxp6       1/1     Running   0          40s
+kibana-kb-5d8b446f79-hh964                3/3     Running   0          2m
+kibana-kb-5d8b446f79-jbhrj                3/3     Running   0          2m
 
-NAME                  STATUS   VOLUME           CAPACITY   STORAGECLASS
-elasticsearch-data-elasticsearch-es-default-0   Bound   es-data-nodeX   100Gi   local-storage
-elasticsearch-data-elasticsearch-es-default-1   Bound   es-data-nodeY   100Gi   local-storage
-elasticsearch-data-elasticsearch-es-default-2   Bound   es-data-nodeZ   100Gi   local-storage
+NAME                                                                  STATUS   VOLUME          CAPACITY   STORAGECLASS
+persistentvolumeclaim/elasticsearch-data-elasticsearch-es-default-0   Bound    es-data-nodeX   100Gi      local-storage
+persistentvolumeclaim/elasticsearch-data-elasticsearch-es-default-1   Bound    es-data-nodeY   100Gi      local-storage
+persistentvolumeclaim/elasticsearch-data-elasticsearch-es-default-2   Bound    es-data-nodeZ   100Gi      local-storage
 
-NAME                HEALTH   NODES   VERSION   PHASE   AGE
-elasticsearch       green    3       9.3.2     Ready   5m
+NAME                                                       HEALTH   NODES   VERSION   PHASE   AGE
+elasticsearch.elasticsearch.k8s.elastic.co/elasticsearch   green    3       9.3.2     Ready   2m
 
-NAME       HEALTH   NODES   VERSION   AGE
-kibana     green    2       9.3.2     4m
+NAME                                  HEALTH   NODES   VERSION   AGE
+kibana.kibana.k8s.elastic.co/kibana   green    2       9.3.2     2m
+
+NAME                                             HEALTH   AVAILABLE   EXPECTED   VERSION   AGE
+agent.agent.k8s.elastic.co/eck-stack-eck-agent   green    3           3          9.3.2     2m
+agent.agent.k8s.elastic.co/fleet-server          green    2           2          9.3.2     2m
 ```
+
+**Why `3/3` on ES / Kibana pods:** Elasticsearch runs three containers per pod — the main process plus two monitoring sidecars (Metricbeat for stack metrics, Filebeat for logs). Kibana is the same pattern. Fleet Server and Agent pods are `1/1` because they don't ship with sidecars.
 
 ---
 
-## Step 13 — Get the elastic user password
+## Step 14 — Get the elastic user password
 
 ECK auto-creates the `elastic` superuser and stores its password in a secret. Fetch it into a shell variable that the remaining steps reuse:
 
 ```bash
 elastic_pw=$(kubectl -n elastic-stack get secret elasticsearch-es-elastic-user \
   -o go-template='{{.data.elastic | base64decode}}')
-echo "$elastic_pw"   # copy this for the Kibana browser login in Step 14
+echo "$elastic_pw"   # copy this for the Kibana browser login in Step 15
 ```
 
 Every `curl` and `elastic-agent install` below reuses `$elastic_pw` — re-export it if you start a new shell.
 
 ---
 
-## Step 14 — Access Kibana
+## Step 15 — Access Kibana
 
 ### Via NodePort (production access)
 
@@ -771,9 +838,9 @@ for ip in "$node1_ip" "$node2_ip" "$node3_ip"; do
 done
 ```
 
-Log in with username `elastic` and the password from Step 13 (`echo "$elastic_pw"`).
+Log in with username `elastic` and the password from Step 14 (`echo "$elastic_pw"`).
 
-The browser will warn about the certificate because your internal CA is not in the system trust store yet — that's Step 15. You can click through the warning for now.
+The browser will warn about the certificate because your internal CA is not in the system trust store yet — that's Step 16. You can click through the warning for now.
 
 ### How NodePort routing actually works
 
@@ -814,34 +881,56 @@ This is convenient for first-time exploration but not a production pattern — i
 
 **Do this on day one, before your cluster fills up.**
 
-Our Elastic Agent DaemonSet runs the Kubernetes integration on every node, which pulls metrics every few seconds (pod state, node stats, container stats, network stats, events) AND ships every container log from every pod in the cluster. On a quiet 3-node cluster this easily produces **several GiB of data per day**. Without sensible Index Lifecycle Management (ILM) policies your indices grow forever and eventually fill your disks — regardless of how big they are.
+Our Elastic Agent DaemonSet runs the Kubernetes + System integrations on every node, which pulls metrics every few seconds (Kubernetes state, pod/node/container stats, network, events, plus host CPU / memory / disk / process metrics). On a quiet 3-node cluster this easily produces **several GiB of data per day**. Without sensible Index Lifecycle Management (ILM) policies your indices grow forever and eventually fill your disks — regardless of how big they are.
 
-**How ILM actually works in stock Elastic** ([ILM docs](https://www.elastic.co/guide/en/elasticsearch/reference/current/index-lifecycle-management.html)): Elastic ships two catch-all fallback policies, **`logs`** and **`metrics`**. Every data stream created by Fleet integrations (including our Kubernetes integration) is assigned one of those two by default. The built-in defaults have **no delete phase** — data stays forever. That's what we need to change.
+> 🛈 **The stack ships observability data through two independent pipelines.** Knowing which is which makes the policy list below trivial.
+>
+> **Pipeline 1 — your Elastic Agents.** The DaemonSet (and any external Agent you enroll later) runs `elastic-agent`, which writes directly to Fleet data streams named `logs-<integration>.<dataset>-…` and `metrics-<integration>.<dataset>-…`. Everything ends up under two policies: **`logs@lifecycle`** for all `logs-*` streams and **`metrics@lifecycle`** for all `metrics-*` streams. On a Kubernetes-monitored cluster the `metrics-*` family is dozens of data streams and by far the biggest growth source.
+>
+> **Pipeline 2 — ECK's Stack self-monitoring sidecars.** When `monitoring.metrics.elasticsearchRefs` is set in the ES CR (on by default), ECK injects **standalone** `beats/metricbeat` + `beats/filebeat` containers as sidecars of every ES and Kibana pod. These aren't Elastic Agents — they're plain Beats, from before Fleet existed, configured with `xpack.enabled: true`. They publish through the legacy Stack Monitoring pipeline, which lands in three policies: **`.monitoring-8-ilm-policy`** for the metricsets Kibana's Stack Monitoring UI renders (node stats, shard stats, cluster stats, …), **`metricbeat`** for ES metricsets that don't fit that UI's schema (per-pipeline `ingest_pipeline` metrics, `ml_job`, `ccr`, `pending_tasks` — not a duplicate of `.monitoring-*`, just the leftovers), and **`filebeat`** for ES/Kibana log files (GC, server, slowlog, deprecation, `kibana.json`).
+>
+> **Why Elastic Agents never fall through to `metricbeat-*` / `filebeat-*`:** the `elastic-agent` binary uses a different output wiring that writes directly to Fleet data streams with no default-beat-index fallback. Only ECK's legacy standalone Beats sidecars touch those indices at all — and they do it because ECK's monitoring plumbing predates Fleet.
+>
+> **Not shipped by default:** container logs from your workload pods. The Kubernetes integration in `values.yaml` collects metrics + events only, not application stdout/stderr. Enable the `container_logs` input on the integration if you want those — opt-in because it can multiply ingest tenfold.
 
-**Step 1 — Edit the `logs` policy for a sensible retention curve.**
+**The five ILM policies that matter** (three of the five share the same simple rollover/delete settings, so they collapse into a single step below):
 
-In Kibana, go to **Stack Management → Index Lifecycle Policies → logs → Edit policy**. Then:
+| Policy | Pipeline | What it governs | Action |
+|---|---|---|---|
+| **`logs@lifecycle`** | Fleet (`logs-*`) | All Fleet/Agent log data streams | Rollover 5d, delete 30d. See Step 1. |
+| **`metrics@lifecycle`** | Fleet (`metrics-*`) | All Fleet/Agent metric data streams (the dominant growth source) | Rollover 1d, downsample to 1h, delete 7d. See Step 2. |
+| **`.monitoring-8-ilm-policy`** | ECK sidecar (`.monitoring-*`) | Stack Monitoring UI indices | Rollover 12h, delete 3d. See Step 3. |
+| **`metricbeat`** | ECK sidecar (`metricbeat-*`) | Metricbeat fallback: `ingest_pipeline`, `ml_job`, `ccr`, `pending_tasks` etc. — not a duplicate of `.monitoring-*`, just the leftovers | Rollover 12h, delete 3d. See Step 3. |
+| **`filebeat`** | ECK sidecar (`filebeat-*`) | Filebeat fallback: ES GC / server / slowlog / deprecation + Kibana log files | Rollover 12h, delete 3d. See Step 3. |
 
-- In the **Hot phase**, expand **Advanced settings** and **turn OFF "Use recommended defaults"**. This unlocks the rollover knobs.
-- Set **Maximum age** to `5d`. Rollover cadence should be a fraction of total retention — a 1:6 ratio gives you neat, mostly-sealed segments rather than one giant index that keeps getting rewritten.
-- Leave **Maximum primary shard size** at the default `50gb`.
-- Scroll down, **enable the Delete phase**, and set it to `30d` after rollover. So: rollover every 5 days, total retention 30 days.
-- Save.
+> 🛈 **Ignore the deprecated bare-name `logs` and `metrics` policies** that also appear in the policy list — in 9.x they're leftovers from older versions with nothing pointing at them. The `@lifecycle` variants above are the real defaults now.
 
-**Step 2 — Edit the `metrics` policy similarly, but tighter and with downsampling.**
+> 🛈 **Why only `metrics@lifecycle` has a downsampling step.** Downsampling is an ILM action that only runs on data streams indexed in **time-series mode** (TSDS). Fleet's `metrics-*` data streams use TSDS — each data point has a `_tsid` and time-bucketed rollup is native. The ECK monitoring sidecar indices (`.monitoring-*`, `metricbeat-*`, `filebeat-*`) use the **standard** index mode, so the downsampling action has nothing to work with and would silently do nothing. For those three, we just rely on short rollover + short delete.
 
-Metrics are high-cardinality and lose value fast. Same idea:
+In Kibana, open **Stack Management → Index Lifecycle Policies**, then work through the three steps below. For each policy, in the **Hot phase** expand **Advanced settings** and **turn OFF "Use recommended defaults"** to unlock the knobs; leave **Maximum primary shard size** at the default `50gb`.
 
-- In the **Hot phase → Advanced settings**, turn OFF recommended defaults.
-- **Maximum age** `1d` (rollover every day).
-- **Maximum primary shard size** can stay `50gb`.
-- **Enable Downsampling** with an interval of `1h`. This collapses many points per timestamp into one hourly summary — orders of magnitude fewer documents, most of the chart shape preserved. Huge savings for Kubernetes metrics you don't look at with sub-hour resolution anyway.
-- **Enable the Delete phase**, set it to `7d`. Metrics worth 7 days of granular + 7 days of downsampled is plenty for operational dashboards.
-- Save.
+**Step 1 — `logs@lifecycle`** *(Fleet logs — container logs if you enable them, agent self-logs, etc.)*
 
-**Step 3 — Force immediate rollover of all existing data streams.**
+- **Maximum age** `5d`
+- **Enable the Delete phase** → `30d` after rollover
+- Save
 
-This is the critical step almost every tutorial skips. When you edit an ILM policy, **existing backing indices keep the OLD policy** until they rollover naturally — which with Elastic's 30-day default rollover could mean nothing happens for a month. Force a lazy rollover across every data stream right now:
+**Step 2 — `metrics@lifecycle`** *(Fleet metrics — the biggest growth source)*
+
+- **Maximum age** `1d` (rollover every day)
+- **Enable Downsampling** at a `1h` interval — collapses many points per series into one hourly summary, orders of magnitude fewer documents for metrics you'd look at with sub-hour resolution at best
+- **Enable the Delete phase** → `7d`
+- Save
+
+**Step 3 — `.monitoring-8-ilm-policy`, `metricbeat`, and `filebeat`** *(all three ECK sidecar policies — same settings, repeat for each)*
+
+- **Maximum age** `12h`
+- **Enable the Delete phase** → `3d`
+- Save
+
+**Step 4 — Force immediate rollover of all existing data streams.**
+
+This is the critical step almost every tutorial skips. When you edit an ILM policy, **existing backing indices keep the OLD policy** until they rollover naturally. Force a lazy rollover across every data stream right now:
 
 ```bash
 for stream in $(curl --cacert ca/ca.crt -s -u "elastic:${elastic_pw}" \
@@ -854,15 +943,34 @@ done
 
 The `?lazy` flag means "create the new backing index on the NEXT write event" — no interrupted ingest, no duplicate docs, no manual disruption. Every data stream picks up its edited ILM policy immediately after its next write.
 
-**Step 4 — (Optional, only if needed) per-integration policies.**
+**Step 5 — (Optional) per-integration policies.**
 
-If a single integration produces an overwhelming amount of data (say, containers that log tens of thousands of lines per second), you can create a dedicated ILM policy and attach it to just that data stream. But for most deployments, tuning `logs` and `metrics` once is enough — everything else inherits sane defaults.
+If a single integration dominates ingest (say, application containers that log tens of thousands of lines per second), you can create a dedicated ILM policy and attach it to just that data stream via a Fleet integration override. For most deployments, tuning the policies above is enough — everything else inherits sane defaults.
 
-> 🛈 **If you skip this step entirely, the single biggest day-2 failure mode of this stack is disk-full.** The Kubernetes integration alone can eat a 100 GiB PV in a few weeks of normal cluster activity, and once Elasticsearch hits its disk watermarks it starts refusing writes and eventually flipping indices to read-only. A 15-minute tour through the ILM UI now saves you a 2 AM incident later.
+> 🛈 **If you skip this section entirely, the single biggest day-2 failure mode of this stack is disk-full.** The Kubernetes integration alone can eat a 100 GiB PV in a few weeks of normal cluster activity, and once Elasticsearch hits its disk watermarks it starts refusing writes and eventually flipping indices to read-only. A 15-minute tour through the ILM UI now saves you a 2 AM incident later.
+
+### Next thing — check the Kubernetes overview dashboard
+
+Once ILM is sorted and the stack has been ingesting for a few minutes, take a quick look at the pre-built Kubernetes dashboard to confirm everything is wired up end-to-end.
+
+In Kibana, open **Dashboards**, search for **`[Metrics Kubernetes] Cluster Overview`**, and open it. This dashboard ships with the Kubernetes integration and is the single best "is it working?" check — one page covers every piece of the pipeline.
+
+You should see all panels populated:
+
+- **Node count, pod count, desired vs ready replicas** → comes from `kube-state-metrics` via the `state_*` data streams. If these are zero or blank, `kube-state-metrics` isn't reachable (check `kubectl -n elastic-stack get pods` — there should be a `kube-state-metrics-…` pod Running).
+- **Cluster CPU usage, cluster memory usage, CPU/memory usage by node** → mix of the kubelet `kubernetes.node` metricset (numerator) and `kube-state-metrics.state_node` (denominator). If the numbers are present but the percentages are blank, you have the kubelet half but not the KSM half.
+- **Running vs pending pods, pod restarts, job completions** → all from `state_*` data streams.
+
+Also worth browsing once:
+
+- **`[Metrics Kubernetes] Nodes`** — per-node CPU / memory / pods / working-set, with a selector in the top left to flip between node1/node2/node3.
+- **`[Metrics Kubernetes] Pods`** — pod-level CPU/memory/network/restart counts, filterable by namespace.
+
+Every panel on these dashboards should have real numbers. If anything is blank, that's the signal to go back and check the agent pod logs (`kubectl -n elastic-stack logs ds/eck-stack-eck-agent-agent --tail=100 | grep -i error`) — the most common cause is a transient startup delay (give it 60 seconds).
 
 ---
 
-## Step 15 — Trust the CA on clients
+## Step 16 — Trust the CA on clients
 
 Distribute `ca/ca.crt` to everything that talks to the cluster:
 
@@ -893,7 +1001,7 @@ After trust is set up, browser warnings disappear and every `curl` works without
 
 ---
 
-## Step 16 — Enrolling external Elastic Agents
+## Step 17 — Enrolling external Elastic Agents
 
 Agents running **inside** the cluster are already enrolled via the `eck-agent` policy — no action needed. To enrol an agent **outside** the cluster (a laptop, a server in another subnet):
 
@@ -974,8 +1082,19 @@ Bump every `version:` field in `kubernetes/eck-stack/values.yaml` (there are fou
 helm upgrade eck-stack elastic/eck-stack \
   --version 0.18.1 \
   --namespace elastic-stack \
-  --values kubernetes/eck-stack/values.yaml
+  --values kubernetes/eck-stack/values.yaml \
+  --server-side=false
 ```
+
+> 🚨 **Gotcha — `helm upgrade` needs `--server-side=false` on an existing ECK stack.**
+> Without it you'll get:
+>
+> ```
+> UPGRADE FAILED: conflict occurred while applying object elastic-stack/elasticsearch …
+> Apply failed with 1 conflict: conflict with "elastic-operator" using elasticsearch.k8s.elastic.co/v1: .spec.nodeSets
+> ```
+>
+> The ECK operator claims server-side-apply ownership of `.spec.nodeSets` at reconciliation time, which makes helm's default SSA path refuse to overwrite. `--server-side=false` tells helm to use client-side apply and sidesteps the conflict. `--force` and `--take-ownership` do **not** help — don't bother trying them. Apply the flag to every `helm upgrade eck-stack …` command from here on; only the very first install in [Step 13](#step-13--deploy-the-elastic-stack) and the Clean reset reinstall (both fresh-namespace scenarios) work without it.
 
 ECK handles the rolling upgrade for you:
 
@@ -991,12 +1110,13 @@ Total upgrade time for a 3-node cluster: 10–20 minutes depending on data volum
 Every non-trivial setting in your stack lives in `kubernetes/eck-stack/values.yaml`. To change one:
 
 1. **Edit the file.** E.g. to enable a new Kibana setting, find the `eck-kibana.config:` block and add your key.
-2. **Re-run helm upgrade:**
+2. **Re-run helm upgrade** — same command as in [Upgrading the Elastic Stack](#upgrading-the-elastic-stack) above, including the `--server-side=false` flag (see that section for the SSA gotcha):
    ```bash
    helm upgrade eck-stack elastic/eck-stack \
      --version 0.18.1 \
      --namespace elastic-stack \
-     --values kubernetes/eck-stack/values.yaml
+     --values kubernetes/eck-stack/values.yaml \
+     --server-side=false
    ```
 3. **ECK picks up the change and restarts the pods.** For Elasticsearch it does a true rolling restart — drains shards, restarts one node at a time, waits for green, moves on. For Kibana it recreates all pods at once (Kibana cannot be upgraded with a rolling restart because the running replicas would see inconsistent migration state — ECK deletes and replaces them, causing a brief UI downtime of a few seconds). Fleet Server's pods are rolled one at a time. All of this is orchestrated by the operator — you don't touch `kubectl delete pod`.
 4. **Watch it happen:**
@@ -1077,6 +1197,123 @@ Once you have a snapshot repository wired up, **everything else that depends on 
 
 See the [Elasticsearch S3 repository docs](https://www.elastic.co/guide/en/elasticsearch/reference/current/repository-s3.html) for all available client settings (region, max retries, bucket versioning, etc.).
 
+### Clean reset (wipe all Elastic data and start over)
+
+> ## 🚨 DESTRUCTIVE 🚨
+>
+> This procedure **permanently deletes every Elasticsearch index, every saved object, every Kibana dashboard, and every byte of data on `/var/mnt/data` on all three nodes.** There is no undo. Use this when you want to return to an empty-stack state — typically after a configuration mistake you caught during bootstrap, when re-rolling from the repo files is faster than manually unpicking the half-applied state.
+>
+> **Do not run this on a healthy cluster you care about.** If you just need to change a running value, see [Changing a configuration value](#changing-a-configuration-value-kibana--elasticsearch) instead.
+
+Four phases: uninstall the Helm releases, wipe the data disks with a privileged Job per node, delete and re-create the local PVs, re-install the Helm releases from the same repo files.
+
+```bash
+# Phase 1 — tear down the stack. ECK deletes StatefulSets, pods, and the
+# auto-generated PVCs on its way out. PVs stay (reclaimPolicy: Retain).
+# kube-state-metrics is a separate Helm release and needs its own uninstall,
+# even though it lives in the same namespace.
+helm -n elastic-stack uninstall eck-stack
+helm -n elastic-stack uninstall kube-state-metrics
+
+# Wait until all elastic-stack pods are actually gone (not just Terminating).
+kubectl -n elastic-stack wait --for=delete pods --all --timeout=3m || true
+
+# Phase 2 — wipe /var/mnt/data on every node.
+# Creates a temporary eck-cleanup namespace with three Jobs, each pinned
+# to one node via nodeSelector. Each Job runs busybox, bind-mounts
+# /var/mnt/data, and `rm -rf`s every entry except lost+found.
+kubectl apply -f kubernetes/cleanup/wipe-data.yaml
+
+# Wait for all three Jobs to complete.
+kubectl -n eck-cleanup wait --for=condition=Complete jobs --all --timeout=2m
+
+# Eyeball what they deleted (the "Before" / "After" listings tell you
+# exactly which directories were wiped on which node).
+for j in wipe-node1 wipe-node2 wipe-node3; do
+  echo "--- $j"
+  kubectl -n eck-cleanup logs job/$j
+done
+
+# Delete the cleanup namespace (and the Jobs inside it).
+kubectl delete -f kubernetes/cleanup/wipe-data.yaml
+
+# Phase 3 — the old PVs still point at the node paths via nodeAffinity,
+# but their CSI state is "Released" from the previous PVCs. Delete them
+# and re-apply the storage YAML so they come back Available.
+kubectl delete pv es-data-node1 es-data-node2 es-data-node3
+kubectl apply -f kubernetes/storage/
+
+# Phase 4 — re-install kube-state-metrics, then the stack. Same commands as
+# Step 11 and Step 13 — nothing special. The operator reconciles everything
+# from scratch against the freshly-wiped disks.
+helm upgrade --install kube-state-metrics prometheus-community/kube-state-metrics \
+  --version 7.2.2 \
+  --namespace elastic-stack
+
+helm upgrade --install eck-stack elastic/eck-stack \
+  --version 0.18.1 \
+  --namespace elastic-stack \
+  --values kubernetes/eck-stack/values.yaml
+```
+
+Then wait for everything green using the same four `kubectl wait` commands from Step 13.
+
+**Why wipe the disks at all?** The local PVs point at `/var/mnt/data` directly. Deleting a PVC / PV in Kubernetes is a metadata-only operation — the files on the data disk are **not touched**. If you simply re-roll the stack without wiping, the new Elasticsearch pods load the old state from the previous cluster (different cluster UUID, different node IDs) and either refuse to start or silently load stale data. Wiping between runs is the only way to guarantee a truly clean reset.
+
+### Multiple Fleet outputs (Platinum)
+
+The shipped `kubernetes/eck-stack/values.yaml` pre-defines two Fleet *outputs* under `eck-kibana.spec.config.xpack.fleet.outputs`:
+
+- `external-es` — the HA list of three NodePort URLs (`https://$node<N>_ip:30920`). Marked `is_default: true` and `is_default_monitoring: true`, so **every agent policy inherits it** unless you override per-policy.
+- `kubernetes-es` — the in-cluster `.svc` URL (`https://elasticsearch-es-http.elastic-stack.svc:9200`). Defined but **unused** by default, because neither preconfigured agent policy pins itself to it.
+
+On the default Basic license both the Fleet Server pods and the DaemonSet Elastic Agents talk to Elasticsearch over NodePort, which is fine — the kube-proxy / Cilium fabric routes in-cluster traffic to `<nodeIP>:30920` back to the ES Service's endpoints without ever leaving the cluster. It's one extra hop and it works.
+
+**When would you want split outputs?** Two common upgrade triggers:
+
+1. **You added a real load balancer in front of the nodes.** Now external traffic flows through `lb.example.com:30920`, but you want in-cluster Fleet Server and Agent pods to use the short `.svc` URL instead of looping through the LB.
+2. **You want external agents on separate machines** (laptops, bare-metal servers, IoT) to receive their own output list — maybe a different LB, maybe a DNS name with a TTL, maybe a read-only mirror cluster.
+
+Both of these require **per-policy output assignment**, which is [gated at the `platinum` licence tier](https://www.elastic.co/guide/en/fleet/current/agent-policy.html) in Kibana's Fleet plugin.
+
+**How to activate a 30-day trial** (do NOT ship a guide that relies on this — the trial expires and then per-policy outputs break):
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: eck-trial-license
+  namespace: elastic-system
+  labels:
+    license.k8s.elastic.co/type: enterprise_trial
+  annotations:
+    elastic.co/eula: accepted
+EOF
+```
+
+The ECK operator picks this up and calls `POST /_license/start_trial?acknowledge=true` against the Elasticsearch cluster. Enterprise Trial unlocks every feature Elastic sells — Platinum is included. After 30 days, stack features gated above Basic enter a [degraded mode](https://www.elastic.co/guide/en/elastic-stack-overview/current/license-expiration.html) and your preconfigured Fleet policies stop being created on restart. Trials are one-per-cluster — you cannot restart the clock by re-applying the secret. **This guide does NOT assume a trial is active** — the shipped values.yaml works forever on Basic.
+
+**Editing `xpack.fleet.agentPolicies` to split outputs (Platinum only):**
+
+```yaml
+# inside eck-kibana.spec.config, under xpack.fleet.agentPolicies
+- name: Fleet Server on ECK policy
+  id: eck-fleet-server
+  data_output_id: kubernetes-es        # in-cluster: use .svc directly
+  monitoring_output_id: kubernetes-es
+  fleet_server_host_id: kubernetes-fleet
+  # ...rest unchanged
+
+- name: Elastic Agent on ECK policy
+  id: eck-agent
+  data_output_id: kubernetes-es        # in-cluster: use .svc directly
+  monitoring_output_id: kubernetes-es
+  # ...rest unchanged
+```
+
+External agents you later enroll against a *different* policy (created via the Kibana UI or the Fleet API) can then point at `external-es` or any other output you define. `data_output_id` and `monitoring_output_id` must be identical within a single policy — Kibana rejects them being different ([`kibana/.../fleet-settings.md`](https://www.elastic.co/guide/en/kibana/current/fleet-settings-kb.html)).
+
 ### Rotating the internal CA
 
 The CA you created in Step 7 is valid for 10 years. **ECK does NOT auto-renew user-provided CAs** — mark the expiry in your calendar and rotate before it expires.
@@ -1140,7 +1377,13 @@ kubectl get pv -o yaml | grep -A3 nodeAffinity
 The init container didn't run. Check that you're using the `values.yaml` shipped with this repo — the `initContainers` block must be present.
 
 **Elasticsearch pod `CrashLoopBackOff` with "permission denied" on the data dir.**
-The `fsGroup: 1000` wasn't applied, or `/var/mnt/data/elasticsearch` on the host doesn't exist. Talos's `UserVolumeConfig` auto-creates the mount point; verify with `talosctl -n <ip> ls /var/mnt/data`.
+The `fsGroup: 1000` from `values.yaml` wasn't applied — ES runs as uid 1000 and can't write the root of the data disk. Re-check `kubernetes/eck-stack/values.yaml` has the `podTemplate.spec.securityContext.fsGroup: 1000` block. Verify the mount on the node itself with `talosctl -n <ip> ls /var/mnt/data` — you should see `lost+found` (from the ext4 filesystem) and, once ES starts successfully, an Elasticsearch-owned `nodes/` subtree.
+
+**`MountVolume.NewMounter initialization failed … path "/var/mnt/data/…" does not exist` on the ES pods.**
+The `local` PV points at a path that isn't on disk. On Talos, `UserVolumeConfig` only creates the mount point — it won't create subdirectories inside it. The PVs shipped in `kubernetes/storage/pvs.yaml` use the bare mount point (`/var/mnt/data`) on purpose to sidestep this. If you customised the path, either revert or add a Talos `machine.files` stanza to create the subdirectory on boot.
+
+**A pod restarted from a previous install stays in `CrashLoopBackOff` with cluster-UUID or node-lock errors.**
+The data disk still contains files from the previous run. PVC/PV deletion is metadata-only — the files on `/var/mnt/data` persist. Run [Clean reset](#clean-reset-wipe-all-elastic-data-and-start-over) to wipe the data disks and re-roll.
 
 **Kibana pods flap between Ready and NotReady.**
 Kibana aggressively health-checks Elasticsearch. Make sure all three ES pods show `elasticsearch green 3`. Kibana stops flapping as soon as the ES cluster goes green.
@@ -1194,8 +1437,8 @@ For a LAN deployment the nodes don't have publicly resolvable DNS, so ACME HTTP-
 **What if I already have an internal company CA?**
 Skip Step 7 entirely. Drop your existing `ca.crt` and `ca.key` into the secret (Step 8). ECK signs leaf certs with whatever CA you give it.
 
-**Can I turn off audit logging to reduce disk usage?**
-Remove `xpack.security.audit.enabled: true` from `eck-elasticsearch.nodeSets[0].config` and `eck-kibana.config`. Audit logs go into Elasticsearch itself and contribute a small but steady index growth — keep them unless you're really tight on disk.
+**Is audit logging working?**
+The shipped `values.yaml` sets `xpack.security.audit.enabled: true` on both Elasticsearch and Kibana, but neither is actually emitting events on the default Basic license + default appender config. ES-side audit logging is a Platinum feature (ES logs `Auditing logging is DISABLED because the currently active license [BASIC] does not permit it` at startup). Kibana-side audit logging needs an explicit file appender (`xpack.security.audit.appender`) to emit anything — which isn't configured here. Treat audit logging as a future-work item; the enable flag is in place so that when someone revisits this, the wiring is half-done.
 
 ---
 

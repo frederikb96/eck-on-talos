@@ -350,6 +350,16 @@ eck-kibana:
   # Kibana configuration (kibana.yml)
   # -------------------------------------------------------------------------
   config:
+    # The external URL users type in the browser (and that Fleet's callback
+    # URLs get baked into). In production point this at your load balancer /
+    # ingress DNS name (e.g. https://kibana.example.com). For a LAN / test
+    # setup, pointing it at one node's NodePort URL is fine — Kibana only
+    # uses this value for things like Fleet enrollment callbacks and
+    # generated links in emails/reports, NOT for the actual HTTP listener.
+    #
+    # Docs: https://www.elastic.co/guide/en/kibana/current/settings.html#server-publicBaseUrl
+    server.publicBaseUrl: "https://__NODE1_IP__:30601"
+
     # Allow Kibana to show Cross-Cluster Search monitoring data. Harmless
     # if you don't use CCS.
     monitoring.ui.ccs.enabled: true
@@ -472,11 +482,15 @@ eck-kibana:
     #
     # The IDs here (eck-fleet-server / eck-agent) are referenced from the
     # Agent CRs further down via policyID:
+    # Neither policy pins a `data_output_id` / `monitoring_output_id` — both
+    # inherit the default output from xpack.fleet.outputs above. Per-policy
+    # outputs (one output for in-cluster agents, a different one for external)
+    # is a Platinum feature. See the "Multiple Fleet outputs" section in the
+    # README Maintenance chapter for the split-output recipe if you ever
+    # upgrade.
     xpack.fleet.agentPolicies:
       - name: Fleet Server on ECK policy
         id: eck-fleet-server
-        data_output_id: kubernetes-es
-        monitoring_output_id: kubernetes-es
         fleet_server_host_id: kubernetes-fleet
         namespace: default
         is_managed: true
@@ -491,8 +505,6 @@ eck-kibana:
 
       - name: Elastic Agent on ECK policy
         id: eck-agent
-        data_output_id: kubernetes-es
-        monitoring_output_id: kubernetes-es
         fleet_server_host_id: kubernetes-fleet
         namespace: default
         monitoring_enabled: [logs, metrics]
