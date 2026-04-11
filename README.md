@@ -22,7 +22,7 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
 
 ## Table of Contents
 
-- [ ECK on Talos](#-eck-on-talos)
+- [ECK on Talos](#-eck-on-talos)
   - [Table of Contents](#table-of-contents)
   - [What you get](#what-you-get)
   - [Optional extensions (not part of this guide, but easy to add later)](#optional-extensions-not-part-of-this-guide-but-easy-to-add-later)
