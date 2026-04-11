@@ -59,8 +59,8 @@ jobs:
       - name: Install kubeconform
         run: |
           cd "$(mktemp -d)"
-          wget -q https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz
-          tar -xzf kubeconform-linux-amd64.tar.gz
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz -o kubeconform.tar.gz
+          tar -xzf kubeconform.tar.gz
           install -m 0755 kubeconform "$HOME/.local/bin/kubeconform"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Validate manifests
