@@ -29,13 +29,17 @@ jobs:
               - '**/*.yaml'
               - '**/*.yml'
               - '.yamllint.yml'
+              - '.github/workflows/ci.yaml'
             k8s:
               - 'kubernetes/**'
+              - '.github/workflows/ci.yaml'
             md:
               - '**/*.md'
+              - '.github/workflows/ci.yaml'
             helm:
               - 'kubernetes/eck-operator/**'
               - 'kubernetes/eck-stack/**'
+              - '.github/workflows/ci.yaml'
 
   yamllint:
     needs: changes
@@ -68,7 +72,7 @@ jobs:
           kubeconform -strict -ignore-missing-schemas \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            kubernetes/namespaces.yaml kubernetes/storage/
+            kubernetes/namespaces.yaml kubernetes/storage/ kubernetes/cleanup/
 
   helm-lint:
     needs: changes
