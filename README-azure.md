@@ -306,18 +306,23 @@ Expected: each prints `API is not implemented in maintenance mode`. That's succe
 
 ## Continue with the main guide
 
-Before jumping to Step 2 some Azure-specific notes for the rest of the main guide:
+The main README's **Set your cluster variables** block is designed to handle cloud VMs directly — on Azure you just fill in the two IP sets with different values. When you get to that section, use:
 
-- Interface name inside Talos: **`eth0`** (accelerated networking default). Leave it.
-- Gateway: **`10.0.0.1`** (Azure subnet default).
-- `talosctl`/`kubectl` from your laptop use the **public IPs**. Private IPs are only for inter-node traffic.
-- In Step 3 (Talos config gen), set `cluster.controlPlane.endpoint` to `https://<node1-public-ip>:6443`, not the private IP.
+- `node1_lan_ip` / `node2_lan_ip` / `node3_lan_ip` → `10.0.0.11` / `10.0.0.12` / `10.0.0.13` (the private VNet IPs — these match the repo defaults, nothing to change)
+- `node1_ip` / `node2_ip` / `node3_ip` → the **three public IPs** printed by the verify loop above
 
-Now jump to **[Step 2 — Locate the nodes and verify disks](README.md#step-2--locate-the-nodes-and-verify-disks)**.
+Two tiny Azure-isms that already match the repo defaults (nothing to edit):
+
+- Interface name inside Talos: `eth0` (accelerated networking default)
+- Default gateway: `10.0.0.1` (Azure subnet default)
+
+Now jump to **[Step 2 of the main guide](README.md#step-2--locate-the-nodes-and-verify-disks)**.
 
 ## Clean-up
 
-**Portal → Resource groups → eck-on-talos-test → Delete resource group** → type the name → Delete.
+```bash
+az group delete -n "$RG" --yes --no-wait
+```
 
 Everything goes: VMs, disks, VNet, NSG, storage account, image, public IPs. ~€2 for a 2-hour run.
 
@@ -343,8 +348,8 @@ Everything goes: VMs, disks, VNet, NSG, storage account, image, public IPs. ~€
 
 - Storage account → Data protection → disable soft delete for blobs → remove the soft-deleted blob → retry.
 
-**Step 5 of the main guide (`talosctl bootstrap`) fails with "cannot reach cluster endpoint".**
+**`talosctl -n <public-ip> version` fails with "x509: certificate is valid for …" after Step 4.**
 
-- `cluster.controlPlane.endpoint` in your generated machine config is the private `10.0.0.11` instead of node1's public IP. Edit the config, reapply, retry the bootstrap.
+- The laptop-facing (public) IP is not in that node's `machine.certSANs`. Check you set `node1_ip` / `node2_ip` / `node3_ip` to the **public** IPs before running the sed in the main README's Variables block. If not, re-run: `git checkout talos/nodes/`, re-export the variables, re-run the sed, re-apply configs.
 
 **Everything else:** see the main README's [Troubleshooting](README.md#troubleshooting).

@@ -3,6 +3,9 @@ machine:
   install:
     diskSelector:
       wwid: "REPLACE_WITH_NODE3_SYSTEM_DISK_WWID"
+  certSANs:
+    - __NODE3_LAN_IP__
+    - __NODE3_IP__
   network:
     hostname: node3
     nameservers:
@@ -11,7 +14,7 @@ machine:
     interfaces:
       - interface: eth0
         addresses:
-          - 10.0.0.13/24
+          - __NODE3_LAN_IP__/24
         routes:
           - network: 0.0.0.0/0
             gateway: 10.0.0.1

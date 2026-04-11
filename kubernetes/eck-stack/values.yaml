@@ -17,10 +17,12 @@
 # Chart reference:
 #   https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-install-helm.html
 #
-# IMPORTANT: PLACEHOLDERS you must replace before deploying (search & replace):
-#   10.0.0.11         → your node1 IP
-#   10.0.0.12         → your node2 IP
-#   10.0.0.13         → your node3 IP
+# IMPORTANT: PLACEHOLDERS that get filled in before deploying. The README's
+# "Set your cluster variables" block runs a sed pass that replaces all of these
+# automatically — you never edit them by hand:
+#   __NODE1_IP__      → your node1 IP (public on cloud VMs, LAN on bare metal)
+#   __NODE2_IP__      → your node2 IP
+#   __NODE3_IP__      → your node3 IP
 #   elastic.lan       → your DNS name for Elasticsearch (or delete the entry)
 #   kibana.lan        → your DNS name for Kibana (or delete the entry)
 #   fleet.lan         → your DNS name for Fleet Server (or delete the entry)
@@ -112,9 +114,9 @@ eck-elasticsearch:
       # in this list, the TLS handshake fails with a hostname mismatch.
       selfSignedCertificate:
         subjectAltNames:
-          - ip: 10.0.0.11
-          - ip: 10.0.0.12
-          - ip: 10.0.0.13
+          - ip: __NODE1_IP__
+          - ip: __NODE2_IP__
+          - ip: __NODE3_IP__
           - dns: elastic.lan
 
   # -------------------------------------------------------------------------
@@ -339,9 +341,9 @@ eck-kibana:
         secretName: eck-ca
       selfSignedCertificate:
         subjectAltNames:
-          - ip: 10.0.0.11
-          - ip: 10.0.0.12
-          - ip: 10.0.0.13
+          - ip: __NODE1_IP__
+          - ip: __NODE2_IP__
+          - ip: __NODE3_IP__
           - dns: kibana.lan
 
   # -------------------------------------------------------------------------
@@ -404,10 +406,10 @@ eck-kibana:
     #                    default — agents only use it when a policy
     #                    explicitly references `id: kubernetes-es`.
     #
-    # Replace the three IPs (10.0.0.11 / 10.0.0.12 / 10.0.0.13) with
-    # your actual node addresses. The IPs must also be in the
-    # subjectAltNames block of the Elasticsearch CR above (they are —
-    # the same three IPs appear in both places).
+    # The three __NODE<N>_IP__ placeholders are filled in by the README's
+    # sed pass. They must also be in the subjectAltNames block of the
+    # Elasticsearch CR above (they are — the same three placeholders
+    # appear in both places).
     #
     # Optional: add a DNS name in addition to (or instead of) the IPs.
     # E.g. add "https://elastic.lan:30920" as a fourth entry, point
@@ -419,9 +421,9 @@ eck-kibana:
         name: External ES (NodePort HA)
         type: elasticsearch
         hosts:
-          - "https://10.0.0.11:30920"
-          - "https://10.0.0.12:30920"
-          - "https://10.0.0.13:30920"
+          - "https://__NODE1_IP__:30920"
+          - "https://__NODE2_IP__:30920"
+          - "https://__NODE3_IP__:30920"
         is_default: true
         is_default_monitoring: true
       - id: kubernetes-es
@@ -441,9 +443,9 @@ eck-kibana:
       - id: external-fleet
         name: External Fleet (NodePort HA)
         host_urls:
-          - "https://10.0.0.11:30822"
-          - "https://10.0.0.12:30822"
-          - "https://10.0.0.13:30822"
+          - "https://__NODE1_IP__:30822"
+          - "https://__NODE2_IP__:30822"
+          - "https://__NODE3_IP__:30822"
         is_default: true
       - id: kubernetes-fleet
         name: Kubernetes Fleet (in-cluster)
@@ -578,9 +580,9 @@ eck-fleet-server:
         secretName: eck-ca
       selfSignedCertificate:
         subjectAltNames:
-          - ip: 10.0.0.11
-          - ip: 10.0.0.12
-          - ip: 10.0.0.13
+          - ip: __NODE1_IP__
+          - ip: __NODE2_IP__
+          - ip: __NODE3_IP__
           - dns: fleet.lan
 
   deployment:

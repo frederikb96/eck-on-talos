@@ -33,6 +33,7 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
     - [Sizing the VMs (RAM budget per node)](#sizing-the-vms-ram-budget-per-node)
     - [Client workstation tools](#client-workstation-tools)
     - [Clone this repository](#clone-this-repository)
+    - [Set your cluster variables](#set-your-cluster-variables)
     - [Pick your Talos version](#pick-your-talos-version)
   - [Step 1 — Boot Talos on each VM](#step-1--boot-talos-on-each-vm)
     - [Option A — ISO boot (recommended, works on any hypervisor that mounts ISOs)](#option-a--iso-boot-recommended-works-on-any-hypervisor-that-mounts-isos)
@@ -49,7 +50,7 @@ This guide is intentionally opinionated and keeps the moving parts to a minimum.
   - [Step 8 — Create namespaces and the CA secret](#step-8--create-namespaces-and-the-ca-secret)
   - [Step 9 — Create the StorageClass and PVs](#step-9--create-the-storageclass-and-pvs)
   - [Step 10 — Install the ECK operator](#step-10--install-the-eck-operator)
-  - [Step 11 — Customise values.yaml](#step-11--customise-valuesyaml)
+  - [Step 11 — Review values.yaml](#step-11--review-valuesyaml)
     - [What's pre-tuned (so you don't have to think about it)](#whats-pre-tuned-so-you-dont-have-to-think-about-it)
   - [Step 12 — Deploy the Elastic stack](#step-12--deploy-the-elastic-stack)
   - [Step 13 — Get the elastic user password](#step-13--get-the-elastic-user-password)
@@ -140,7 +141,7 @@ Three Talos VMs on the same LAN, each one a stacked Kubernetes control-plane + w
   - ≥ 4 vCPU, **≥ 16 GiB RAM** (16 GiB is the recommended minimum — see sizing below)
   - **Disk 1 (system):** ≥ 32 GiB, Talos OS — you can use the hypervisor's default virtual disk
   - **Disk 2 (data):** ≥ 100 GiB, a second virtual disk dedicated to Elasticsearch data. Talos auto-mounts it at `/var/mnt/data` via `UserVolumeConfig`.
-- **Static IPs** on the LAN. This guide assumes `10.0.0.11`, `10.0.0.12`, `10.0.0.13`. Replace them with your own throughout.
+- **Static IPs** on the LAN. This guide assumes `10.0.0.11`, `10.0.0.12`, `10.0.0.13` as placeholders — you'll export your real values once in the [Set your cluster variables](#set-your-cluster-variables) block below, and every command and YAML file will follow along automatically.
 - **DNS and default gateway** — Talos needs internet to pull its installer image and the container images the first time. An air-gapped setup is possible but out of scope here.
 
 ### Sizing the VMs (RAM budget per node)
@@ -156,14 +157,13 @@ Three Talos VMs on the same LAN, each one a stacked Kubernetes control-plane + w
 | Talos OS + kubelet | ~2 GiB | every node |
 | **Peak footprint on a busy node** | **≈ 16 GiB** | nodes 1 and 2 — node 3 has ~4 GiB headroom |
 
-**Why 16 GiB is the floor:** drop below that and you start eating into Elasticsearch's heap budget or Lucene's off-heap file cache, which hurts search/indexing performance dramatically.
+**Want more headroom?** Raise `resources.limits.memory` for Elasticsearch in `kubernetes/eck-stack/values.yaml`. ECK auto-sizes the JVM heap to ~50% of the container memory limit — no `ES_JAVA_OPTS` to touch.
 
-**Want more headroom?** Raise `resources.limits.memory` for Elasticsearch in `kubernetes/eck-stack/values.yaml`:
+- **Default: 8 GiB ES limit** → ~4 GiB heap. Fine for small/medium workloads.
+- **Scale up to 64 GiB ES limit** → ~32 GiB heap. **This is the ceiling.** Above ~32 GiB heap the JVM loses compressed ordinary object pointers (compressed OOPs) and gets _less_ efficient, not more.
+- Whatever ES limit you pick, the VM must fit it plus ~8 GiB of overhead (Kibana + Fleet + Agent + Talos). A 64 GiB ES limit therefore needs a ~72 GiB VM on nodes 1 and 2.
 
-- **32 GiB VMs** → set ES memory to 16 GiB. Elasticsearch auto-sizes the JVM heap from the container memory limit (no `ES_JAVA_OPTS` to touch), so heap goes to ~8 GiB automatically.
-- **64 GiB VMs** → set ES memory to 31 GiB (the highest useful heap — above ~31 GiB the JVM loses compressed ordinary object pointers and gets _less_ efficient, not more).
-
-Going **above 64 GiB per node** for a single-ES-per-node layout like this one is wasted money. If you need more capacity, add nodes, not RAM.
+Need more capacity beyond a 64 GiB ES limit per node? **Add nodes, don't add RAM** — a single ES pod past that size is wasted money.
 
 ### Client workstation tools
 
@@ -202,6 +202,60 @@ cd eck-on-talos
 ```
 
 All commands below assume you're in the repo root.
+
+### Set your cluster variables
+
+Every bash block in the rest of this guide reuses the same handful of shell variables — set them once here and you never have to paste an IP again. If you start a new shell later, re-paste this block before continuing.
+
+The node gets **two IPs per machine** because on cloud VMs (Azure, EC2, Hetzner Cloud, …) the network the VM lives in is separate from the one your laptop lives in. On a flat bare-metal LAN they're identical — the second variable just defaults to the first and you don't have to think about it.
+
+```bash
+# LAN IP — what Talos binds eth0 to on each VM. This is the VM's OWN
+# network: the bare-metal LAN, or the private VNet / VPC / subnet on
+# cloud VMs. Inter-node traffic (etcd, kubelet, Flannel) uses these.
+node1_lan_ip="10.0.0.11"
+node2_lan_ip="10.0.0.12"
+node3_lan_ip="10.0.0.13"
+
+# Node IP — how CLIENTS reach the node from outside the cluster:
+# kubectl, talosctl, curl, browser, ECK TLS SANs, Fleet NodePort URLs.
+# Bare metal / flat LAN → defaults to the LAN IP, leave as-is.
+# Cloud VMs → override with the PUBLIC IP of each node.
+node1_ip="$node1_lan_ip"
+node2_ip="$node2_lan_ip"
+node3_ip="$node3_lan_ip"
+
+# Cluster identity: used by 'talosctl gen config' and the internal CA subject.
+cluster_name="eck-cluster"
+ca_org="My Company"
+
+# Optional TLS SubjectAltName DNS entries (appear on every leaf cert).
+# Keep the placeholders, replace with real DNS you control, or delete the
+# matching 'dns:' blocks in values.yaml if you don't use DNS at all.
+elastic_dns="elastic.lan"
+kibana_dns="kibana.lan"
+fleet_dns="fleet.lan"
+```
+
+Now paint those values into every YAML file in the repo. The repo ships with clean `__NODE<N>_LAN_IP__` / `__NODE<N>_IP__` placeholders, one sed fills them all in:
+
+```bash
+sed -i \
+  -e "s|__NODE1_LAN_IP__|$node1_lan_ip|g" \
+  -e "s|__NODE2_LAN_IP__|$node2_lan_ip|g" \
+  -e "s|__NODE3_LAN_IP__|$node3_lan_ip|g" \
+  -e "s|__NODE1_IP__|$node1_ip|g" \
+  -e "s|__NODE2_IP__|$node2_ip|g" \
+  -e "s|__NODE3_IP__|$node3_ip|g" \
+  -e "s|elastic\.lan|$elastic_dns|g" \
+  -e "s|kibana\.lan|$kibana_dns|g" \
+  -e "s|fleet\.lan|$fleet_dns|g" \
+  talos/nodes/node*.yaml kubernetes/eck-stack/values.yaml
+```
+
+After this, both file sets contain **your** IPs and DNS names. Each Talos node config has its LAN IP on `eth0` and both IPs in `machine.certSANs` (Talos dedupes them on bare metal, so the block is zero-cost there and unlocks mTLS on cloud where the two IPs differ). The only manual YAML edit remaining is the per-node disk `wwid` in Step 2.
+
+> 🛈 **Do I really need both IPs in `certSANs`?** On bare metal they're the same address and Talos dedupes — it's a no-op. On cloud, yes: your laptop reaches the Talos API on the **public** IP, while any in-cluster process (or a debug shell) reaches it on the **private** IP. Both have to be in the cert for mTLS to succeed from both directions.
 
 ### Pick your Talos version
 
@@ -257,12 +311,21 @@ Until you apply a machine config, Talos has:
 
 ## Step 2 — Locate the nodes and verify disks
 
-Find the three DHCP IPs (check your DHCP leases or hypervisor console), then export them — every command in Step 2 and Step 4 reuses these three variables:
+Find the three IPs your VMs currently respond on (DHCP leases, hypervisor console, or cloud VM public IPs), then export them — every command in Step 2 and Step 4 reuses these three variables:
 
 ```bash
-tmp_ip_1="192.168.1.50"   # whatever the DHCP server gave VM1 → will become 10.0.0.11
-tmp_ip_2="192.168.1.51"   # VM2 → 10.0.0.12
-tmp_ip_3="192.168.1.52"   # VM3 → 10.0.0.13
+# IPs to reach each VM WHILE IT'S STILL IN MAINTENANCE MODE. Only used
+# until Step 4 applies the config — after that the VMs switch to their
+# static $node<N>_lan_ip and you never touch tmp_ip_N again.
+#
+#   Bare metal / DHCP       → the DHCP lease of each VM (different from final IP)
+#   Cloud VMs (Azure/EC2…)  → same as the final $node<N>_ip, just do:
+#                               tmp_ip_1="$node1_ip"
+#                               tmp_ip_2="$node2_ip"
+#                               tmp_ip_3="$node3_ip"
+tmp_ip_1="192.168.1.50"
+tmp_ip_2="192.168.1.51"
+tmp_ip_3="192.168.1.52"
 ```
 
 Confirm all three are reachable in maintenance mode:
@@ -300,12 +363,12 @@ for ip in "$tmp_ip_1" "$tmp_ip_2" "$tmp_ip_3"; do
 done
 ```
 
-Example output:
+Example output (the first column is whatever your `tmp_ip_N` values are — here DHCP leases):
 
 ```text
-10.0.0.11         sdb         naa.6002248059bddfe77ab4c2f59bca39e4
-10.0.0.12         sda         naa.600224800526fac1cb6de3faaa4744bd
-10.0.0.13         sda         naa.6002248071cc72055d2a33429c539d4f
+192.168.1.50      sdb         naa.6002248059bddfe77ab4c2f59bca39e4
+192.168.1.51      sda         naa.600224800526fac1cb6de3faaa4744bd
+192.168.1.52      sda         naa.6002248071cc72055d2a33429c539d4f
 ```
 
 Now **manually** paste each node's wwid into the matching `talos/nodes/node<N>.yaml`, replacing the placeholder:
@@ -326,10 +389,11 @@ machine:
 
 ## Step 3 — Generate the Talos machine config
 
-From the repo root, run `talosctl gen config` pointing at the first planned IP (not the DHCP IP — Talos embeds this as the cluster endpoint):
+From the repo root, run `talosctl gen config` pointing at node1's IP as the cluster endpoint. `--additional-sans` bakes all three node IPs into the kube-apiserver cert, so `kubectl` can fail over between them without a TLS error:
 
 ```bash
-talosctl gen config eck-cluster https://10.0.0.11:6443 \
+talosctl gen config "$cluster_name" "https://$node1_ip:6443" \
+  --additional-sans "$node1_ip,$node2_ip,$node3_ip" \
   --config-patch @talos/patches/common.yaml \
   --output-dir _out
 ```
@@ -342,15 +406,30 @@ _out/worker.yaml          ← unused (we stack CP + worker, see common.yaml)
 _out/talosconfig          ← client certificate bundle for talosctl
 ```
 
-Load the talosconfig into your local talosctl client:
+Load the talosconfig into your local talosctl client and point it at the three nodes:
 
 ```bash
 talosctl config merge _out/talosconfig
-talosctl config endpoint 10.0.0.11 10.0.0.12 10.0.0.13
-talosctl config node 10.0.0.11
+talosctl config endpoint "$node1_ip" "$node2_ip" "$node3_ip"
+talosctl config node "$node1_ip"
 ```
 
-> The `_out/` directory is gitignored. Keep `_out/talosconfig` safe — it's the root credential for the cluster.
+> **What these three commands do:**
+>
+> - `talosctl config merge _out/talosconfig` reads the cluster-specific talosconfig that `gen config` just wrote and merges it into your **global talosctl config** at `~/.talos/config` (the default — override with `$TALOSCONFIG`). The merge creates a new **context** named after the cluster (`eck-cluster` here). Every `talosctl` command from now on picks up these client certs automatically.
+> - `talosctl config endpoint …` sets which IPs talosctl dials. With multiple endpoints listed, talosctl round-robins and fails over — handy when one node is down.
+> - `talosctl config node …` sets the DEFAULT `-n` target so you can omit `-n "$node1_ip"` from most commands.
+>
+> **Managing more than one Talos cluster?** Every `talosctl config merge` adds another context — they don't overwrite each other. Switch between clusters any time:
+>
+> ```bash
+> talosctl config contexts                     # list every cluster you've merged
+> talosctl config context my-other-cluster     # switch the active context
+> ```
+>
+> Each context keeps its own endpoints, node default, and client certificates. Same mental model as `kubectl config use-context`.
+
+> The `_out/` directory is gitignored. Keep `_out/talosconfig` safe — if you ever lose your global `~/.talos/config` you can re-merge from this file. It's the root credential for the cluster.
 
 ---
 
@@ -365,7 +444,7 @@ talosctl apply-config --insecure \
   --config-patch @talos/nodes/node1.yaml
 ```
 
-Talos writes the config to its `STATE` partition, restarts networking, and you'll see the VM's IP switch from its DHCP lease to `10.0.0.11`. Repeat for node2 and node3:
+Talos writes the config to its `STATE` partition, restarts networking, and you'll see the VM's `eth0` IP switch from its DHCP lease to `$node1_lan_ip`. Repeat for node2 and node3:
 
 ```bash
 talosctl apply-config --insecure \
@@ -382,9 +461,9 @@ talosctl apply-config --insecure \
 Give each node about 60 seconds after apply, then verify it responds on its new static IP:
 
 ```bash
-talosctl -n 10.0.0.11 version
-talosctl -n 10.0.0.12 version
-talosctl -n 10.0.0.13 version
+for ip in "$node1_ip" "$node2_ip" "$node3_ip"; do
+  talosctl -n "$ip" version
+done
 ```
 
 You should get a normal (non-maintenance) Talos version response.
@@ -396,13 +475,13 @@ You should get a normal (non-maintenance) Talos version response.
 Bootstrap etcd on **node1 only** (running this on more than one node will corrupt etcd):
 
 ```bash
-talosctl bootstrap --nodes 10.0.0.11 --endpoints 10.0.0.11
+talosctl bootstrap --nodes "$node1_ip" --endpoints "$node1_ip"
 ```
 
 Wait about a minute for the API server to come up. You can watch progress with:
 
 ```bash
-talosctl -n 10.0.0.11 dmesg -f
+talosctl -n "$node1_ip" dmesg -f
 # Ctrl-C when you see "kubernetes bootstrap completed"
 ```
 
@@ -411,7 +490,7 @@ talosctl -n 10.0.0.11 dmesg -f
 ## Step 6 — Get kubeconfig and verify
 
 ```bash
-talosctl kubeconfig --nodes 10.0.0.11 --endpoints 10.0.0.11 ./kubeconfig
+talosctl kubeconfig --nodes "$node1_ip" --endpoints "$node1_ip" ./kubeconfig
 export KUBECONFIG="$PWD/kubeconfig"
 
 kubectl get nodes
@@ -442,7 +521,7 @@ mkdir -p ca && cd ca
 openssl genrsa -out ca.key 4096
 
 openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 \
-  -subj "/CN=ECK Internal CA/O=My Company" \
+  -subj "/CN=ECK Internal CA/O=${ca_org}" \
   -out ca.crt
 
 cd ..
@@ -535,27 +614,22 @@ The operator pod should reach `1/1 Running` in under a minute. From this point o
 
 ---
 
-## Step 11 — Customise values.yaml
+## Step 11 — Review values.yaml
 
-> **What this step does:** Replaces the placeholder IPs and DNS names in `kubernetes/eck-stack/values.yaml` with your real ones before deploying.
+> **What this step does:** Takes a look at the Helm values file that defines your entire Elastic Stack, so you know what you're about to deploy.
 
-The file is heavily commented — every non-trivial setting has an inline explanation and a link to the relevant Elastic docs. Open it, skim through to get a feel for what the stack looks like, then do the placeholder substitution:
+The sed in [Set your cluster variables](#set-your-cluster-variables) already replaced the placeholder IPs and DNS names with your real ones. All that's left is to skim the file once — it's heavily commented, with inline explanations and links to the relevant Elastic docs for every non-trivial setting.
 
-| Placeholder | Replace with |
-|---|---|
-| `10.0.0.11` | Your **node1** IP |
-| `10.0.0.12` | Your **node2** IP |
-| `10.0.0.13` | Your **node3** IP |
-| `elastic.lan` | DNS name you'll use for Elasticsearch, or delete this `dns:` line |
-| `kibana.lan` | DNS name you'll use for Kibana, or delete this `dns:` line |
-| `fleet.lan` | DNS name you'll use for Fleet Server, or delete this `dns:` line |
+```bash
+$EDITOR kubernetes/eck-stack/values.yaml   # or: less, cat, whatever you prefer
+```
 
-> 🛈 **Where the node IPs end up in the config** (they're used in two places):
+> 🛈 **Where the node IPs ended up:**
 >
-> 1. **TLS SubjectAltNames.** The three IPs become SAN entries on the leaf certificates ECK signs with your CA. When a client connects to `https://10.0.0.11:30920`, TLS validation checks that `10.0.0.11` is in the cert's SAN list. If it's not, the handshake fails.
-> 2. **Default Fleet outputs for newly enrolled agents.** The Kibana config declares two Fleet outputs and two Fleet Server hosts. The DEFAULT (`is_default: true`) is an entry listing ALL THREE NODE IPS — `https://10.0.0.11:30920`, `https://10.0.0.12:30920`, `https://10.0.0.13:30920`. Every newly enrolled agent receives all three and fails over between them if one is unreachable, so you get de-facto HA across all three nodes without any external load balancer. Same deal for Fleet Server on port 30822.
+> 1. **TLS SubjectAltNames.** Each IP became a SAN entry on the leaf certificates ECK signs with your CA. When a client connects to `https://$node1_ip:30920`, TLS validation checks that the IP is in the cert's SAN list. If it's not, the handshake fails.
+> 2. **Default Fleet outputs for newly enrolled agents.** The Kibana config declares a default Fleet output and a default Fleet Server host, both listing all three node IPs on the NodePort. Every newly enrolled agent receives all three and fails over between them if one is unreachable → de-facto HA across all three nodes without any external load balancer.
 >
-> 🛈 **Optional DNS names.** `elastic.lan` / `kibana.lan` / `fleet.lan` are placeholders — delete them, replace them with your company's internal DNS, or add them alongside the IPs. Any DNS name you add here MUST also be added to the corresponding `subjectAltNames` block so TLS verification accepts it. If you set up DNS later, clients can move between IPs and DNS interchangeably without re-issuing the certs.
+> 🛈 **Not using DNS?** If you left the placeholders `elastic.lan` / `kibana.lan` / `fleet.lan` in your variables block, they're still in `values.yaml`. Either leave them (no harm — just unused SAN entries on the cert) or open `values.yaml` and delete the three `dns:` lines. You can always add DNS names later without re-issuing the certs if you widen the SAN list.
 
 ### What's pre-tuned (so you don't have to think about it)
 
@@ -624,14 +698,15 @@ kibana     green    2       9.3.2     4m
 
 ## Step 13 — Get the elastic user password
 
-ECK auto-creates the `elastic` superuser and stores its password in a secret:
+ECK auto-creates the `elastic` superuser and stores its password in a secret. Fetch it into a shell variable that the remaining steps reuse:
 
 ```bash
-kubectl -n elastic-stack get secret elasticsearch-es-elastic-user \
-  -o go-template='{{.data.elastic | base64decode}}{{"\n"}}'
+elastic_pw=$(kubectl -n elastic-stack get secret elasticsearch-es-elastic-user \
+  -o go-template='{{.data.elastic | base64decode}}')
+echo "$elastic_pw"   # copy this for the Kibana browser login in Step 14
 ```
 
-Copy it. You'll need it to log in to Kibana and to call Elasticsearch directly with `curl`.
+Every `curl` and `elastic-agent install` below reuses `$elastic_pw` — re-export it if you start a new shell.
 
 ---
 
@@ -639,13 +714,15 @@ Copy it. You'll need it to log in to Kibana and to call Elasticsearch directly w
 
 ### Via NodePort (production access)
 
-Open your browser at any of:
+Print the three Kibana URLs and open any of them in your browser:
 
-- `https://10.0.0.11:30601`
-- `https://10.0.0.12:30601`
-- `https://10.0.0.13:30601`
+```bash
+for ip in "$node1_ip" "$node2_ip" "$node3_ip"; do
+  echo "https://$ip:30601"
+done
+```
 
-Log in with username `elastic` and the password from Step 13.
+Log in with username `elastic` and the password from Step 13 (`echo "$elastic_pw"`).
 
 The browser will warn about the certificate because your internal CA is not in the system trust store yet — that's Step 15. You can click through the warning for now.
 
@@ -669,7 +746,7 @@ That means:
 - It's already a load balancer. kube-proxy distributes connections across all healthy Kibana replicas. You do NOT need a separate LB to get HA on the LAN.
 - The node IP you hit is irrelevant to where the work happens. `https://node1-ip:30601` is not "Kibana-on-node1" — it's "the Kibana Service, entered via the node1 door".
 
-You can verify this by looking at which pods actually handle requests. With two Kibana replicas and anti-affinity, one lives on node1 and one on node2; node3 has no Kibana pod — and yet `https://10.0.0.13:30601` still works perfectly because node3 forwards to the other two.
+You can verify this by looking at which pods actually handle requests. With two Kibana replicas and anti-affinity, one lives on node1 and one on node2; node3 has no Kibana pod — and yet hitting `https://$node3_ip:30601` still works perfectly because node3 forwards to the other two.
 
 The same is true for Elasticsearch (port 30920) and Fleet Server (port 30822).
 
@@ -718,14 +795,11 @@ Metrics are high-cardinality and lose value fast. Same idea:
 This is the critical step almost every tutorial skips. When you edit an ILM policy, **existing backing indices keep the OLD policy** until they rollover naturally — which with Elastic's 30-day default rollover could mean nothing happens for a month. Force a lazy rollover across every data stream right now:
 
 ```bash
-ELASTIC_PW=$(kubectl -n elastic-stack get secret elasticsearch-es-elastic-user \
-  -o go-template='{{.data.elastic | base64decode}}')
-
-for stream in $(curl --cacert ca/ca.crt -s -u "elastic:${ELASTIC_PW}" \
-  "https://10.0.0.11:30920/_data_stream" | jq -r '.data_streams[].name'); do
+for stream in $(curl --cacert ca/ca.crt -s -u "elastic:${elastic_pw}" \
+  "https://${node1_ip}:30920/_data_stream" | jq -r '.data_streams[].name'); do
   echo "rolling over $stream"
-  curl --cacert ca/ca.crt -s -u "elastic:${ELASTIC_PW}" \
-    -X POST "https://10.0.0.11:30920/${stream}/_rollover?lazy" >/dev/null
+  curl --cacert ca/ca.crt -s -u "elastic:${elastic_pw}" \
+    -X POST "https://${node1_ip}:30920/${stream}/_rollover?lazy" >/dev/null
 done
 ```
 
@@ -761,7 +835,7 @@ sudo update-ca-trust
 
 **curl / bash scripts:**
 ```bash
-curl --cacert ca/ca.crt -u "elastic:${elastic_pw}" "https://10.0.0.11:30920/_cluster/health?pretty"
+curl --cacert ca/ca.crt -u "elastic:${elastic_pw}" "https://${node1_ip}:30920/_cluster/health?pretty"
 ```
 
 **Elasticsearch client libraries** (Python `elasticsearch`, Go `elastic/go-elasticsearch`, etc.): pass the `ca.crt` path as the CA bundle.
@@ -774,13 +848,13 @@ After trust is set up, browser warnings disappear and every `curl` works without
 
 Agents running **inside** the cluster are already enrolled via the `eck-agent` policy — no action needed. To enrol an agent **outside** the cluster (a laptop, a server in another subnet):
 
-1. In Kibana → **Fleet → Agent policies** → pick the policy you want the agent to join → **Add agent** → copy the enrollment token.
-2. Note what Kibana shows you as the Fleet Server URL — because the default Fleet Server host we pre-configured in `values.yaml` is a list of all three node NodePort URLs, Kibana will hand your new agent a URL like `https://10.0.0.11:30822` automatically. If you run the agent in a different network segment and IP reachability is an issue, pick whichever of the three node IPs is actually reachable from where the agent lives.
-3. Install and enroll the agent:
+1. In Kibana → **Fleet → Agent policies** → pick the policy you want the agent to join → **Add agent** → copy the enrollment token into a shell variable: `token="<paste>"`.
+2. Note what Kibana shows you as the Fleet Server URL — because the default Fleet Server host we pre-configured in `values.yaml` is a list of all three node NodePort URLs, Kibana will hand your new agent a URL like `https://$node1_ip:30822` automatically. If you run the agent in a different network segment and IP reachability is an issue, pick whichever of the three node IPs is actually reachable from where the agent lives.
+3. On the target host — `scp ca/ca.crt` over first if needed, then install and enroll the agent:
    ```bash
    sudo elastic-agent install \
-     --url=https://10.0.0.11:30822 \
-     --enrollment-token=${token} \
+     --url="https://${node1_ip}:30822" \
+     --enrollment-token="${token}" \
      --certificate-authorities=ca/ca.crt
    ```
    The `--certificate-authorities` flag tells the agent to trust your internal CA, so the TLS handshake with Fleet Server succeeds. No `--insecure` needed, no custom SAN work required beyond what ECK already baked into the cert.
@@ -799,21 +873,22 @@ Always one node at a time. Flannel is bundled with Talos — it upgrades with th
 talos_version="v1.12.7"
 image="ghcr.io/siderolabs/installer:${talos_version}"
 
-# Drain node1, upgrade, uncordon
-kubectl drain node1 \
+# Upgrade node1 — change node_name/node_ip to node2/$node2_ip, then node3/$node3_ip afterwards
+node_name="node1"
+node_ip="$node1_ip"
+
+kubectl drain "$node_name" \
   --ignore-daemonsets \
   --delete-emptydir-data \
   --force \
   --disable-eviction \
   --timeout=180s
-talosctl upgrade --nodes 10.0.0.11 --image "$image" --preserve --reboot-mode powercycle --wait=false
+talosctl upgrade --nodes "$node_ip" --image "$image" --preserve --reboot-mode powercycle --wait=false
 
 # Wait for the node to come back
-while ! talosctl -n 10.0.0.11 version 2>&1 | grep -q "v${talos_version#v}"; do sleep 5; done
-kubectl wait --for=condition=Ready node/node1 --timeout=5m
-kubectl uncordon node1
-
-# Repeat for node2 and node3
+while ! talosctl -n "$node_ip" version 2>&1 | grep -q "v${talos_version#v}"; do sleep 5; done
+kubectl wait --for=condition=Ready "node/$node_name" --timeout=5m
+kubectl uncordon "$node_name"
 ```
 
 #### What each `kubectl drain` flag does
@@ -930,11 +1005,8 @@ eck-elasticsearch:
 **Step 4.** Register the snapshot repository in Elasticsearch itself (once, via the REST API — this is cluster state, not node config):
 
 ```bash
-ELASTIC_PW=$(kubectl -n elastic-stack get secret elasticsearch-es-elastic-user \
-  -o go-template='{{.data.elastic | base64decode}}')
-
-curl --cacert ca/ca.crt -u "elastic:${ELASTIC_PW}" \
-  -X PUT "https://10.0.0.11:30920/_snapshot/my-backup" \
+curl --cacert ca/ca.crt -u "elastic:${elastic_pw}" \
+  -X PUT "https://${node1_ip}:30920/_snapshot/my-backup" \
   -H "Content-Type: application/json" \
   -d '{
     "type": "s3",
@@ -948,8 +1020,8 @@ curl --cacert ca/ca.crt -u "elastic:${ELASTIC_PW}" \
 **Step 5.** Take a snapshot:
 
 ```bash
-curl --cacert ca/ca.crt -u "elastic:${ELASTIC_PW}" \
-  -X PUT "https://10.0.0.11:30920/_snapshot/my-backup/snapshot-1?wait_for_completion=true"
+curl --cacert ca/ca.crt -u "elastic:${elastic_pw}" \
+  -X PUT "https://${node1_ip}:30920/_snapshot/my-backup/snapshot-1?wait_for_completion=true"
 ```
 
 Once you have a snapshot repository wired up, **everything else that depends on it is trivial**: Snapshot Lifecycle Management (SLM) policies, index rollover with rollup-and-delete, searchable snapshots, and eventually a frozen tier. All of it is configurable from the Kibana UI once the keystore credentials are in place. This is the usual "add a frozen tier to my cluster" entry point you keep hearing about — and it all starts with this one Secret.
