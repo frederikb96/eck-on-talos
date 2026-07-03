@@ -403,12 +403,15 @@ From the repo root, run `talosctl gen config` pointing at node1's IP as the clus
 ```bash
 talosctl gen config "$cluster_name" "https://$node1_ip:6443" \
   --talos-version v1.11 \
+  --kubernetes-version 1.34.1 \
   --additional-sans "$node1_ip,$node2_ip,$node3_ip" \
   --config-patch @talos/patches/common.yaml \
   --output-dir _out
 ```
 
 > 🛈 **Why `--talos-version v1.11`?** Starting with Talos 1.12, `gen config` emits a separate `HostnameConfig` document for the node hostname — which conflicts with the per-node `machine.network.hostname` in `talos/nodes/node<N>.yaml` and causes `apply-config` to fail with `static hostname is already set in v1alpha1 config`. Pinning the generator to v1.11 keeps hostname in the main `v1alpha1` document where our patches already live. Talos 1.12+ nodes accept v1.11-style config fine — full backward compat.
+
+> 🛈 **Why `--kubernetes-version 1.34.1`?** `gen config` bakes a Kubernetes version into the config, and it defaults to whatever version *your `talosctl` binary* shipped with. If your `talosctl` is newer than the Talos version you're deploying (very common — the install command grabs `latest`), that default can be a Kubernetes version too new for Talos to accept, and `apply-config` fails with `version of Kubernetes X is too new to be used with Talos 1.12.6`. Pinning it to `1.34.1` (in Talos 1.12's supported range) sidesteps the whole client-vs-node skew. When you bump the Talos version, check the [Talos support matrix](https://www.talos.dev/latest/introduction/support-matrix/) and bump this too.
 
 This produces:
 
@@ -1423,6 +1426,7 @@ rm -rf _out
 talosctl config remove eck-cluster -y           # drop the stale context so merge doesn't auto-rename it to eck-cluster-1
 talosctl gen config "$cluster_name" "https://$node1_ip:6443" \
   --talos-version v1.11 \
+  --kubernetes-version 1.34.1 \
   --additional-sans "$node1_ip,$node2_ip,$node3_ip" \
   --config-patch @talos/patches/common.yaml \
   --output-dir _out
@@ -1434,6 +1438,9 @@ talosctl config node "$node1_ip"
 Then re-run `apply-config` from Step 4. Safe to do pre-bootstrap (no cluster state yet).
 
 > 🛈 **Why the `remove` step?** `talosctl config merge` never overwrites an existing context with the same name — it auto-renames the incoming one (`eck-cluster` → `eck-cluster-1`, `-2`, …). Removing the stale context first keeps the name clean. If you prefer to keep the renamed one, skip `remove` and add `talosctl config use eck-cluster-1` at the end instead.
+
+**`apply-config` fails with `version of Kubernetes X is too new to be used with Talos 1.12.6`.**
+Your `talosctl` binary is newer than the Talos version you're deploying, so `gen config` baked in a Kubernetes version Talos won't accept. The Step 3 command already pins `--kubernetes-version 1.34.1` to avoid this — if you hit the error, you likely dropped that flag. Regenerate with it in place (see Step 3), then re-run `apply-config`. Safe to do pre-bootstrap (no cluster state yet). Alternatively, download a `talosctl` that matches your Talos version (`curl -Lo talosctl https://github.com/siderolabs/talos/releases/download/v1.12.6/talosctl-linux-amd64`) so its default Kubernetes version already fits.
 
 **Node stays `NotReady`, kubelet logs complain about CNI.**
 Talos's built-in Flannel needs cluster networking to come up. Check `talosctl -n <ip> dmesg -f` for errors. Most often this is a wrong interface name in your node patch — Talos tries to bind to the configured interface, can't, and stays stuck.
