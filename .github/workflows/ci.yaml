@@ -80,7 +80,7 @@ jobs:
     runs-on: arc-runner-eck-on-talos
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Render eck-operator values
         run: |
           helm repo add elastic https://helm.elastic.co
