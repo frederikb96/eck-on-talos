@@ -20,7 +20,7 @@ jobs:
       md: ${{ steps.filter.outputs.md }}
       helm: ${{ steps.filter.outputs.helm }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -46,7 +46,7 @@ jobs:
     if: needs.changes.outputs.yaml == 'true'
     runs-on: arc-runner-eck-on-talos
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install yamllint
         run: |
           sudo apt-get update
@@ -59,7 +59,7 @@ jobs:
     if: needs.changes.outputs.k8s == 'true'
     runs-on: arc-runner-eck-on-talos
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install kubeconform
         run: |
           cd "$(mktemp -d)"
@@ -79,7 +79,7 @@ jobs:
     if: needs.changes.outputs.helm == 'true'
     runs-on: arc-runner-eck-on-talos
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: azure/setup-helm@v4
       - name: Render eck-operator values
         run: |
@@ -101,7 +101,7 @@ jobs:
     if: needs.changes.outputs.md == 'true'
     runs-on: arc-runner-eck-on-talos
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
