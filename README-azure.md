@@ -20,7 +20,7 @@ Each block below is standalone — run top to bottom, or paste the whole thing a
 RG="eck-on-talos-test"
 LOC="westeurope"
 SA="eckontalos$RANDOM"
-TALOS_VERSION="v1.12.6"
+TALOS_VERSION="v1.13.8"
 SCHEMATIC="376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba"
 SSH_KEY=$(cat ~/.ssh/id_ed25519.pub)
 
@@ -140,7 +140,7 @@ Expected final output: each node prints `API is not implemented in maintenance m
 
 ```bash
 mkdir -p /tmp/talos-azure && cd /tmp/talos-azure
-talos_version="v1.12.6"
+talos_version="v1.13.8"
 # Canonical empty schematic (vanilla Talos, no extensions). Generate your own at
 # https://factory.talos.dev/ if you want extras (iscsi-tools, tailscale, ...).
 schematic="376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba"
