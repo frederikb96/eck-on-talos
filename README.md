@@ -269,7 +269,7 @@ After this, both file sets contain **your** IPs and DNS names. Each Talos node c
 ### Pick your Talos version
 
 ```bash
-talos_version="v1.12.6"
+talos_version="v1.13.8"
 ```
 
 > 🛈 **About Talos schematics** (advanced, optional): Talos lets you add kernel modules or system extensions (ZFS, tailscale, iscsi-tools, …) via a "schematic" ID from [factory.talos.dev](https://factory.talos.dev). **This guide does NOT need any extensions** — the stock Talos image has everything ECK requires. Only set a `schematic` variable if you know you need a specific extension, and then prepend `${schematic}/` to the image URLs below.
