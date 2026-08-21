@@ -746,7 +746,7 @@ If your VMs are bigger than 16 GiB, just raise `resources.limits.memory` on the 
 
 ```bash
 helm upgrade --install eck-stack elastic/eck-stack \
-  --version 0.18.1 \
+  --version 0.20.0 \
   --namespace elastic-stack \
   --values kubernetes/eck-stack/values.yaml
 ```
@@ -1090,7 +1090,7 @@ Bump every `version:` field in `kubernetes/eck-stack/values.yaml` (there are fou
 
 ```bash
 helm upgrade eck-stack elastic/eck-stack \
-  --version 0.18.1 \
+  --version 0.20.0 \
   --namespace elastic-stack \
   --values kubernetes/eck-stack/values.yaml \
   --server-side=false
@@ -1123,7 +1123,7 @@ Every non-trivial setting in your stack lives in `kubernetes/eck-stack/values.ya
 2. **Re-run helm upgrade** — same command as in [Upgrading the Elastic Stack](#upgrading-the-elastic-stack) above, including the `--server-side=false` flag (see that section for the SSA gotcha):
    ```bash
    helm upgrade eck-stack elastic/eck-stack \
-     --version 0.18.1 \
+     --version 0.20.0 \
      --namespace elastic-stack \
      --values kubernetes/eck-stack/values.yaml \
      --server-side=false

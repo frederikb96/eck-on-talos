@@ -92,7 +92,7 @@ jobs:
       - name: Render eck-stack values
         run: |
           helm template eck-stack elastic/eck-stack \
-            --version 0.18.1 \
+            --version 0.20.0 \
             --namespace elastic-stack \
             --values kubernetes/eck-stack/values.yaml > /dev/null
 
