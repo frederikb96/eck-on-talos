@@ -686,7 +686,7 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm repo update
 
 helm upgrade --install kube-state-metrics prometheus-community/kube-state-metrics \
-  --version 7.2.2 \
+  --version 8.1.3 \
   --namespace elastic-stack
 
 kubectl -n elastic-stack rollout status deploy/kube-state-metrics --timeout=2m
