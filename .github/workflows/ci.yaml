@@ -1,4 +1,14 @@
 ---
+# 🚨 This workflow runs on GitHub-hosted runners, never on a self-hosted one.
+#
+# It triggers on `pull_request`, and for that trigger GitHub runs the workflow file as it exists
+# on the pull request's own head. On a public repository that means a stranger can rewrite this
+# file in their fork and execute whatever they like on whatever machine it names — so naming a
+# self-hosted runner here would hand them a shell inside the cluster that runner lives in.
+#
+# Standard GitHub-hosted runners are unmetered on public repositories, so there is no cost
+# argument for doing otherwise. Every job here is linting and template validation and needs
+# nothing from the cluster.
 name: CI
 
 on:
@@ -7,13 +17,16 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   changes:
-    runs-on: arc-runner-eck-on-talos
+    runs-on: ubuntu-latest
     outputs:
       yaml: ${{ steps.filter.outputs.yaml }}
       k8s: ${{ steps.filter.outputs.k8s }}
@@ -44,7 +57,7 @@ jobs:
   yamllint:
     needs: changes
     if: needs.changes.outputs.yaml == 'true'
-    runs-on: arc-runner-eck-on-talos
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install yamllint
@@ -57,7 +70,7 @@ jobs:
   kubeconform:
     needs: changes
     if: needs.changes.outputs.k8s == 'true'
-    runs-on: arc-runner-eck-on-talos
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install kubeconform
@@ -77,7 +90,7 @@ jobs:
   helm-lint:
     needs: changes
     if: needs.changes.outputs.helm == 'true'
-    runs-on: arc-runner-eck-on-talos
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
@@ -99,7 +112,7 @@ jobs:
   markdownlint:
     needs: changes
     if: needs.changes.outputs.md == 'true'
-    runs-on: arc-runner-eck-on-talos
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -111,7 +124,7 @@ jobs:
   validation:
     needs: [changes, yamllint, kubeconform, helm-lint, markdownlint]
     if: always()
-    runs-on: arc-runner-eck-on-talos
+    runs-on: ubuntu-latest
     steps:
       - name: Aggregate
         run: |
