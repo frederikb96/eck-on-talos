@@ -656,7 +656,7 @@ helm repo add elastic https://helm.elastic.co
 helm repo update
 
 helm upgrade --install eck-operator elastic/eck-operator \
-  --version 3.3.1 \
+  --version 3.5.0 \
   --namespace elastic-system \
   --values kubernetes/eck-operator/values.yaml
 
