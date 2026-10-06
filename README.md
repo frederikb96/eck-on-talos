@@ -177,7 +177,7 @@ Need more capacity beyond a 64 GiB ES limit per node? **Add nodes, don't add RAM
 ### Client workstation tools
 
 ```bash
-talosctl version            # ≥ 1.12
+talosctl version            # ≥ 1.14
 kubectl version --client    # ≥ 1.28
 helm version                # ≥ 3.14
 openssl version             # 1.1 or 3.x
@@ -269,7 +269,7 @@ After this, both file sets contain **your** IPs and DNS names. Each Talos node c
 ### Pick your Talos version
 
 ```bash
-talos_version="v1.12.6"
+talos_version="v1.14.1"
 ```
 
 > 🛈 **About Talos schematics** (advanced, optional): Talos lets you add kernel modules or system extensions (ZFS, tailscale, iscsi-tools, …) via a "schematic" ID from [factory.talos.dev](https://factory.talos.dev). **This guide does NOT need any extensions** — the stock Talos image has everything ECK requires. Only set a `schematic` variable if you know you need a specific extension, and then prepend `${schematic}/` to the image URLs below.
@@ -297,12 +297,12 @@ Use this when your hypervisor doesn't let you attach an ISO but does give you a 
 
 ```bash
 cd /tmp
-wget "https://github.com/siderolabs/talos/releases/download/${talos_version}/metal-amd64.raw.xz"
+wget "https://github.com/siderolabs/talos/releases/download/${talos_version}/metal-amd64.raw.zst"
 # Identify the system disk — DOUBLE CHECK THIS, the dd is destructive.
 lsblk
 # Wipe and write
 wipefs -a /dev/sda
-xz -dc metal-amd64.raw.xz | dd of=/dev/sda bs=4M status=progress && sync
+zstd -dc metal-amd64.raw.zst | dd of=/dev/sda bs=4M status=progress && sync
 reboot
 ```
 
@@ -409,9 +409,9 @@ talosctl gen config "$cluster_name" "https://$node1_ip:6443" \
   --output-dir _out
 ```
 
-> 🛈 **Why `--talos-version v1.11`?** Starting with Talos 1.12, `gen config` emits a separate `HostnameConfig` document for the node hostname — which conflicts with the per-node `machine.network.hostname` in `talos/nodes/node<N>.yaml` and causes `apply-config` to fail with `static hostname is already set in v1alpha1 config`. Pinning the generator to v1.11 keeps hostname in the main `v1alpha1` document where our patches already live. Talos 1.12+ nodes accept v1.11-style config fine — full backward compat.
+> 🛈 **Why `--talos-version v1.11`?** Starting with Talos 1.12, `gen config` emits separate documents for settings this guide's patches keep in the main `v1alpha1` document — first a `HostnameConfig` for the node hostname, and since 1.14 also `KubeletConfig`, `KubeNetworkConfig`, `KubeClusterConfig` and more. They collide with `machine.network.hostname` in `talos/nodes/node<N>.yaml` and with the kubelet, network and cluster settings in `talos/patches/common.yaml`, and `apply-config` fails with errors such as `static hostname is already set in v1alpha1 config`. Pinning the generator to v1.11 keeps all of it in the `v1alpha1` document where our patches already live. Talos 1.12 and later accept v1.11-style config fine — `talosctl validate --mode metal` accepts the pinned output together with the node patches under talosctl 1.14.1.
 
-> 🛈 **Why `--kubernetes-version 1.34.1`?** `gen config` bakes a Kubernetes version into the config, and it defaults to whatever version *your `talosctl` binary* shipped with. If your `talosctl` is newer than the Talos version you're deploying (very common — the install command grabs `latest`), that default can be a Kubernetes version too new for Talos to accept, and `apply-config` fails with `version of Kubernetes X is too new to be used with Talos 1.12.6`. Pinning it to `1.34.1` (in Talos 1.12's supported range) sidesteps the whole client-vs-node skew. When you bump the Talos version, check the [Talos support matrix](https://www.talos.dev/latest/introduction/support-matrix/) and bump this too.
+> 🛈 **Why `--kubernetes-version 1.34.1`?** `gen config` bakes a Kubernetes version into the config, and it defaults to whatever version *your `talosctl` binary* shipped with. If your `talosctl` is newer than the Talos version you're deploying (very common — the install command grabs `latest`), that default can be a Kubernetes version too new for Talos to accept, and `apply-config` fails with `version of Kubernetes X is too new to be used with Talos 1.14.1`. Pinning it to `1.34.1` (inside the range Talos 1.14 supports) sidesteps the whole client-vs-node skew. When you bump the Talos version, check the [Talos support matrix](https://www.talos.dev/latest/introduction/support-matrix/) and bump this too.
 
 This produces:
 
@@ -656,7 +656,7 @@ helm repo add elastic https://helm.elastic.co
 helm repo update
 
 helm upgrade --install eck-operator elastic/eck-operator \
-  --version 3.3.1 \
+  --version 3.5.0 \
   --namespace elastic-system \
   --values kubernetes/eck-operator/values.yaml
 
@@ -686,7 +686,7 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm repo update
 
 helm upgrade --install kube-state-metrics prometheus-community/kube-state-metrics \
-  --version 7.2.2 \
+  --version 8.4.1 \
   --namespace elastic-stack
 
 kubectl -n elastic-stack rollout status deploy/kube-state-metrics --timeout=2m
@@ -746,7 +746,7 @@ If your VMs are bigger than 16 GiB, just raise `resources.limits.memory` on the 
 
 ```bash
 helm upgrade --install eck-stack elastic/eck-stack \
-  --version 0.18.1 \
+  --version 0.20.0 \
   --namespace elastic-stack \
   --values kubernetes/eck-stack/values.yaml
 ```
@@ -804,14 +804,14 @@ persistentvolumeclaim/elasticsearch-data-elasticsearch-es-default-1   Bound    e
 persistentvolumeclaim/elasticsearch-data-elasticsearch-es-default-2   Bound    es-data-nodeZ   100Gi      local-storage
 
 NAME                                                       HEALTH   NODES   VERSION   PHASE   AGE
-elasticsearch.elasticsearch.k8s.elastic.co/elasticsearch   green    3       9.3.2     Ready   2m
+elasticsearch.elasticsearch.k8s.elastic.co/elasticsearch   green    3       9.3.8     Ready   2m
 
 NAME                                  HEALTH   NODES   VERSION   AGE
-kibana.kibana.k8s.elastic.co/kibana   green    2       9.3.2     2m
+kibana.kibana.k8s.elastic.co/kibana   green    2       9.3.8     2m
 
 NAME                                             HEALTH   AVAILABLE   EXPECTED   VERSION   AGE
-agent.agent.k8s.elastic.co/eck-stack-eck-agent   green    3           3          9.3.2     2m
-agent.agent.k8s.elastic.co/fleet-server          green    2           2          9.3.2     2m
+agent.agent.k8s.elastic.co/eck-stack-eck-agent   green    3           3          9.3.8     2m
+agent.agent.k8s.elastic.co/fleet-server          green    2           2          9.3.8     2m
 ```
 
 **Why `3/3` on ES / Kibana pods:** Elasticsearch runs three containers per pod — the main process plus two monitoring sidecars (Metricbeat for stack metrics, Filebeat for logs). Kibana is the same pattern. Fleet Server and Agent pods are `1/1` because they don't ship with sidecars.
@@ -1090,7 +1090,7 @@ Bump every `version:` field in `kubernetes/eck-stack/values.yaml` (there are fou
 
 ```bash
 helm upgrade eck-stack elastic/eck-stack \
-  --version 0.18.1 \
+  --version 0.20.0 \
   --namespace elastic-stack \
   --values kubernetes/eck-stack/values.yaml \
   --server-side=false
@@ -1123,7 +1123,7 @@ Every non-trivial setting in your stack lives in `kubernetes/eck-stack/values.ya
 2. **Re-run helm upgrade** — same command as in [Upgrading the Elastic Stack](#upgrading-the-elastic-stack) above, including the `--server-side=false` flag (see that section for the SSA gotcha):
    ```bash
    helm upgrade eck-stack elastic/eck-stack \
-     --version 0.18.1 \
+     --version 0.20.0 \
      --namespace elastic-stack \
      --values kubernetes/eck-stack/values.yaml \
      --server-side=false
@@ -1326,7 +1326,7 @@ A full audit trail of who did what in both Elasticsearch and Kibana — failed l
 
 Audit logging is a paid feature — activate a license first via [Activating the Enterprise Trial](#activating-the-enterprise-trial) above.
 
-**How it works:** ECK's stack monitoring (which you already enabled via `spec.monitoring.logs`) attaches a Filebeat sidecar to every Elasticsearch and Kibana pod. That sidecar tails `*_audit.json` on the pod's log volume and ships the events into the `filebeat-9.3.2` data stream with `event.dataset: elasticsearch.audit` or `event.dataset: kibana.audit`. No Filebeat config to write, no Fleet integration to install — just flip the two flags in `values.yaml`.
+**How it works:** ECK's stack monitoring (which you already enabled via `spec.monitoring.logs`) attaches a Filebeat sidecar to every Elasticsearch and Kibana pod. That sidecar tails `*_audit.json` on the pod's log volume and ships the events into the `filebeat-9.3.8` data stream with `event.dataset: elasticsearch.audit` or `event.dataset: kibana.audit`. No Filebeat config to write, no Fleet integration to install — just flip the two flags in `values.yaml`.
 
 **Elasticsearch side** — replace the audit block in the `eck-elasticsearch.spec.nodeSets[0].config:` section with:
 
@@ -1418,8 +1418,8 @@ ECK detects the new CA, re-signs all leaf certs, and triggers a rolling restart 
 
 ## Troubleshooting
 
-**`apply-config` fails with `static hostname is already set in v1alpha1 config`.**
-You ran `talosctl gen config` without `--talos-version v1.11`. Talos ≥1.12 emits a separate `HostnameConfig` document that collides with the `machine.network.hostname` in our per-node patches. Regenerate and refresh your talosctl context:
+**`apply-config` fails with `static hostname is already set in v1alpha1 config` (or `... is already set in the v1alpha1 config` for the kubelet, cluster name or cluster network).**
+You ran `talosctl gen config` without `--talos-version v1.11`. Talos ≥1.12 emits separate documents (`HostnameConfig`, and from 1.14 `KubeletConfig`, `KubeNetworkConfig`, `KubeClusterConfig`, …) that collide with the same settings in our patches. Regenerate and refresh your talosctl context:
 
 ```bash
 rm -rf _out
@@ -1439,8 +1439,8 @@ Then re-run `apply-config` from Step 4. Safe to do pre-bootstrap (no cluster sta
 
 > 🛈 **Why the `remove` step?** `talosctl config merge` never overwrites an existing context with the same name — it auto-renames the incoming one (`eck-cluster` → `eck-cluster-1`, `-2`, …). Removing the stale context first keeps the name clean. If you prefer to keep the renamed one, skip `remove` and add `talosctl config use eck-cluster-1` at the end instead.
 
-**`apply-config` fails with `version of Kubernetes X is too new to be used with Talos 1.12.6`.**
-Your `talosctl` binary is newer than the Talos version you're deploying, so `gen config` baked in a Kubernetes version Talos won't accept. The Step 3 command already pins `--kubernetes-version 1.34.1` to avoid this — if you hit the error, you likely dropped that flag. Regenerate with it in place (see Step 3), then re-run `apply-config`. Safe to do pre-bootstrap (no cluster state yet). Alternatively, download a `talosctl` that matches your Talos version (`curl -Lo talosctl https://github.com/siderolabs/talos/releases/download/v1.12.6/talosctl-linux-amd64`) so its default Kubernetes version already fits.
+**`apply-config` fails with `version of Kubernetes X is too new to be used with Talos 1.14.1`.**
+Your `talosctl` binary is newer than the Talos version you're deploying, so `gen config` baked in a Kubernetes version Talos won't accept. The Step 3 command already pins `--kubernetes-version 1.34.1` to avoid this — if you hit the error, you likely dropped that flag. Regenerate with it in place (see Step 3), then re-run `apply-config`. Safe to do pre-bootstrap (no cluster state yet). Alternatively, download a `talosctl` that matches your Talos version (`curl -Lo talosctl https://github.com/siderolabs/talos/releases/download/v1.14.1/talosctl-linux-amd64`) so its default Kubernetes version already fits.
 
 **Node stays `NotReady`, kubelet logs complain about CNI.**
 Talos's built-in Flannel needs cluster networking to come up. Check `talosctl -n <ip> dmesg -f` for errors. Most often this is a wrong interface name in your node patch — Talos tries to bind to the configured interface, can't, and stays stuck.
@@ -1508,7 +1508,7 @@ Yes. Create `talos/nodes/node4.yaml`, run `talosctl apply-config --insecure --fi
 Yes. Remove the `monitoring:` blocks from `eck-elasticsearch` and `eck-kibana` and point them at a separate ECK cluster's `elasticsearchRefs`. Elastic's official recommendation is a dedicated monitoring cluster, but for small deployments self-monitoring into the same cluster is the pragmatic default.
 
 **Does this work on ARM64?**
-Yes. Download the `metal-arm64.raw.xz` / `metal-arm64.iso` from `https://factory.talos.dev/image/${schematic}/${talos_version}/metal-arm64.iso`. The Elastic container images are multi-arch.
+Yes. Download the `metal-arm64.raw.zst` / `metal-arm64.iso` from `https://factory.talos.dev/image/${schematic}/${talos_version}/metal-arm64.iso`. The Elastic container images are multi-arch.
 
 **Can I use this on Hyperscaler VMs (EC2, GCE, Azure)?**
 Yes — each of them lets you attach a second data disk and boot a custom image. The ISO path is usually easier. DNS names from cloud metadata often work in place of static IPs.
