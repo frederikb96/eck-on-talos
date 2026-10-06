@@ -11,7 +11,7 @@ This repository contains the infrastructure-as-code and operational docs for our
 - **Elasticsearch HTTP:** https://`<ES_DNS_OR_IP>`:30920
 - **Fleet Server:** https://`<FLEET_DNS_OR_IP>`:30822
 - **Internal CA:** `<LOCATION_WHERE_CA_KEY_IS_STORED_E_G_PASSWORD_MANAGER>`
-- **Stack version:** `<e.g. 9.3.2>`
+- **Stack version:** `<e.g. 9.3.8>`
 - **Owner / on-call:** `<TEAM_NAME>`, `<EMAIL_OR_PAGER>`
 
 ## Repository layout
@@ -50,10 +50,10 @@ Everything in this repo is declarative. To change anything:
 ## Versions
 
 ```
-talos_version    = "v1.12.6"
-eck_operator     = "3.3.1"
-eck_stack_chart  = "0.18.1"
-elastic_stack    = "9.3.2"
+talos_version    = "v1.14.1"
+eck_operator     = "3.5.0"
+eck_stack_chart  = "0.20.0"
+elastic_stack    = "9.3.8"
 ```
 
 (Update these whenever you bump the corresponding value in the repo.)

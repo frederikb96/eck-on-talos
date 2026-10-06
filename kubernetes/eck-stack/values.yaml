@@ -40,7 +40,7 @@ eck-elasticsearch:
   # The Elastic Stack version. "# managed by renovate" tells Renovate bot to
   # bump this automatically when a new Elastic version is published. The four
   # version fields (ES, Kibana, Fleet Server, Agent) MUST stay in sync.
-  version: 9.3.2 # managed by renovate
+  version: 9.3.8 # managed by renovate
   enabled: true
 
   # Force the resulting Elasticsearch resource to be named "elasticsearch"
@@ -282,7 +282,7 @@ eck-elasticsearch:
 # KIBANA — the web UI and Fleet control plane
 # =============================================================================
 eck-kibana:
-  version: 9.3.2 # managed by renovate
+  version: 9.3.8 # managed by renovate
   enabled: true
   fullnameOverride: kibana
 
@@ -530,7 +530,7 @@ eck-kibana:
 # FLEET SERVER — the agent control plane, runs as ECK "Agent" with mode: fleet
 # =============================================================================
 eck-fleet-server:
-  version: 9.3.2 # managed by renovate
+  version: 9.3.8 # managed by renovate
   enabled: true
   fullnameOverride: fleet-server
 
@@ -635,7 +635,7 @@ eck-fleet-server:
 # Docs: https://www.elastic.co/guide/en/cloud-on-k8s/current/k8s-elastic-agent-fleet.html
 # =============================================================================
 eck-agent:
-  version: 9.3.2 # managed by renovate
+  version: 9.3.8 # managed by renovate
   enabled: true
 
   # Empty elasticsearchRefs — the agent doesn't talk to ES directly, it

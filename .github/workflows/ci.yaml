@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -33,8 +34,8 @@ jobs:
       md: ${{ steps.filter.outputs.md }}
       helm: ${{ steps.filter.outputs.helm }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -59,7 +60,7 @@ jobs:
     if: needs.changes.outputs.yaml == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install yamllint
         run: |
           sudo apt-get update
@@ -72,7 +73,7 @@ jobs:
     if: needs.changes.outputs.k8s == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install kubeconform
         run: |
           cd "$(mktemp -d)"
@@ -93,20 +94,20 @@ jobs:
     if: needs.changes.outputs.helm == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
       - name: Render eck-operator values
         run: |
           helm repo add elastic https://helm.elastic.co
           helm repo update
           helm template eck-operator elastic/eck-operator \
-            --version 3.3.1 \
+            --version 3.5.0 \
             --namespace elastic-system \
             --values kubernetes/eck-operator/values.yaml > /dev/null
       - name: Render eck-stack values
         run: |
           helm template eck-stack elastic/eck-stack \
-            --version 0.18.1 \
+            --version 0.20.0 \
             --namespace elastic-stack \
             --values kubernetes/eck-stack/values.yaml > /dev/null
 
@@ -115,10 +116,10 @@ jobs:
     if: needs.changes.outputs.md == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Lint
         run: npx --yes markdownlint-cli2 "**/*.md" "#node_modules"
 
