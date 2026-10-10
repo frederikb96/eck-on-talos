@@ -20,7 +20,7 @@ Each block below is standalone — run top to bottom, or paste the whole thing a
 RG="eck-on-talos-test"
 LOC="westeurope"
 SA="eckontalos$RANDOM"
-TALOS_VERSION="v1.14.1"
+TALOS_VERSION="v1.14.2"
 SCHEMATIC="376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba"
 SSH_KEY=$(cat ~/.ssh/id_ed25519.pub)
 
@@ -140,7 +140,7 @@ Expected final output: each node prints `API is not implemented in maintenance m
 
 ```bash
 mkdir -p /tmp/talos-azure && cd /tmp/talos-azure
-talos_version="v1.14.1"
+talos_version="v1.14.2"
 # Canonical empty schematic (vanilla Talos, no extensions). Generate your own at
 # https://factory.talos.dev/ if you want extras (iscsi-tools, tailscale, ...).
 schematic="376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba"
@@ -202,14 +202,14 @@ SAS_URL='<paste the Blob SAS URL — keep the single quotes>'
 
 **Portal → Storage account → Containers → images → azure-amd64.vhd** should now exist.
 
-Rename the blob to `talos-<talos_version>.vhd` (for example `talos-v1.14.1.vhd`) (blob → ⋯ → Rename) and copy its **Overview → URL** for the next step.
+Rename the blob to `talos-<talos_version>.vhd` (for example `talos-v1.14.2.vhd`) (blob → ⋯ → Rename) and copy its **Overview → URL** for the next step.
 
 ### B.4 — Register as custom image
 
 **Portal → Images → + Create**
 
 - Resource group: `eck-on-talos-test`
-- Name: `talos-<talos_version>` (for example `talos-v1.14.1`)
+- Name: `talos-<talos_version>` (for example `talos-v1.14.2`)
 - Region: same as RG
 - OS type: **Linux**
 - VM generation: **Gen 2**

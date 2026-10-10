@@ -269,7 +269,7 @@ After this, both file sets contain **your** IPs and DNS names. Each Talos node c
 ### Pick your Talos version
 
 ```bash
-talos_version="v1.14.1"
+talos_version="v1.14.2"
 ```
 
 > 🛈 **About Talos schematics** (advanced, optional): Talos lets you add kernel modules or system extensions (ZFS, tailscale, iscsi-tools, …) via a "schematic" ID from [factory.talos.dev](https://factory.talos.dev). **This guide does NOT need any extensions** — the stock Talos image has everything ECK requires. Only set a `schematic` variable if you know you need a specific extension, and then prepend `${schematic}/` to the image URLs below.
@@ -409,9 +409,9 @@ talosctl gen config "$cluster_name" "https://$node1_ip:6443" \
   --output-dir _out
 ```
 
-> 🛈 **Why `--talos-version v1.11`?** Starting with Talos 1.12, `gen config` emits separate documents for settings this guide's patches keep in the main `v1alpha1` document — first a `HostnameConfig` for the node hostname, and since 1.14 also `KubeletConfig`, `KubeNetworkConfig`, `KubeClusterConfig` and more. They collide with `machine.network.hostname` in `talos/nodes/node<N>.yaml` and with the kubelet, network and cluster settings in `talos/patches/common.yaml`, and `apply-config` fails with errors such as `static hostname is already set in v1alpha1 config`. Pinning the generator to v1.11 keeps all of it in the `v1alpha1` document where our patches already live. Talos 1.12 and later accept v1.11-style config fine — `talosctl validate --mode metal` accepts the pinned output together with the node patches under talosctl 1.14.1.
+> 🛈 **Why `--talos-version v1.11`?** Starting with Talos 1.12, `gen config` emits separate documents for settings this guide's patches keep in the main `v1alpha1` document — first a `HostnameConfig` for the node hostname, and since 1.14 also `KubeletConfig`, `KubeNetworkConfig`, `KubeClusterConfig` and more. They collide with `machine.network.hostname` in `talos/nodes/node<N>.yaml` and with the kubelet, network and cluster settings in `talos/patches/common.yaml`, and `apply-config` fails with errors such as `static hostname is already set in v1alpha1 config`. Pinning the generator to v1.11 keeps all of it in the `v1alpha1` document where our patches already live. Talos 1.12 and later accept v1.11-style config fine — `talosctl validate --mode metal` accepts the pinned output together with the node patches under talosctl 1.14.2.
 
-> 🛈 **Why `--kubernetes-version 1.34.1`?** `gen config` bakes a Kubernetes version into the config, and it defaults to whatever version *your `talosctl` binary* shipped with. If your `talosctl` is newer than the Talos version you're deploying (very common — the install command grabs `latest`), that default can be a Kubernetes version too new for Talos to accept, and `apply-config` fails with `version of Kubernetes X is too new to be used with Talos 1.14.1`. Pinning it to `1.34.1` (inside the range Talos 1.14 supports) sidesteps the whole client-vs-node skew. When you bump the Talos version, check the [Talos support matrix](https://www.talos.dev/latest/introduction/support-matrix/) and bump this too.
+> 🛈 **Why `--kubernetes-version 1.34.1`?** `gen config` bakes a Kubernetes version into the config, and it defaults to whatever version *your `talosctl` binary* shipped with. If your `talosctl` is newer than the Talos version you're deploying (very common — the install command grabs `latest`), that default can be a Kubernetes version too new for Talos to accept, and `apply-config` fails with `version of Kubernetes X is too new to be used with Talos 1.14.2`. Pinning it to `1.34.1` (inside the range Talos 1.14 supports) sidesteps the whole client-vs-node skew. When you bump the Talos version, check the [Talos support matrix](https://www.talos.dev/latest/introduction/support-matrix/) and bump this too.
 
 This produces:
 
@@ -686,7 +686,7 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm repo update
 
 helm upgrade --install kube-state-metrics prometheus-community/kube-state-metrics \
-  --version 8.4.1 \
+  --version 8.6.0 \
   --namespace elastic-stack
 
 kubectl -n elastic-stack rollout status deploy/kube-state-metrics --timeout=2m
@@ -1439,8 +1439,8 @@ Then re-run `apply-config` from Step 4. Safe to do pre-bootstrap (no cluster sta
 
 > 🛈 **Why the `remove` step?** `talosctl config merge` never overwrites an existing context with the same name — it auto-renames the incoming one (`eck-cluster` → `eck-cluster-1`, `-2`, …). Removing the stale context first keeps the name clean. If you prefer to keep the renamed one, skip `remove` and add `talosctl config use eck-cluster-1` at the end instead.
 
-**`apply-config` fails with `version of Kubernetes X is too new to be used with Talos 1.14.1`.**
-Your `talosctl` binary is newer than the Talos version you're deploying, so `gen config` baked in a Kubernetes version Talos won't accept. The Step 3 command already pins `--kubernetes-version 1.34.1` to avoid this — if you hit the error, you likely dropped that flag. Regenerate with it in place (see Step 3), then re-run `apply-config`. Safe to do pre-bootstrap (no cluster state yet). Alternatively, download a `talosctl` that matches your Talos version (`curl -Lo talosctl https://github.com/siderolabs/talos/releases/download/v1.14.1/talosctl-linux-amd64`) so its default Kubernetes version already fits.
+**`apply-config` fails with `version of Kubernetes X is too new to be used with Talos 1.14.2`.**
+Your `talosctl` binary is newer than the Talos version you're deploying, so `gen config` baked in a Kubernetes version Talos won't accept. The Step 3 command already pins `--kubernetes-version 1.34.1` to avoid this — if you hit the error, you likely dropped that flag. Regenerate with it in place (see Step 3), then re-run `apply-config`. Safe to do pre-bootstrap (no cluster state yet). Alternatively, download a `talosctl` that matches your Talos version (`curl -Lo talosctl https://github.com/siderolabs/talos/releases/download/v1.14.2/talosctl-linux-amd64`) so its default Kubernetes version already fits.
 
 **Node stays `NotReady`, kubelet logs complain about CNI.**
 Talos's built-in Flannel needs cluster networking to come up. Check `talosctl -n <ip> dmesg -f` for errors. Most often this is a wrong interface name in your node patch — Talos tries to bind to the configured interface, can't, and stays stuck.
