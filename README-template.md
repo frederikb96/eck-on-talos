@@ -50,7 +50,7 @@ Everything in this repo is declarative. To change anything:
 ## Versions
 
 ```
-talos_version    = "v1.14.1"
+talos_version    = "v1.14.2"
 eck_operator     = "3.5.0"
 eck_stack_chart  = "0.20.0"
 elastic_stack    = "9.3.8"
