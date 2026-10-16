@@ -202,14 +202,14 @@ SAS_URL='<paste the Blob SAS URL — keep the single quotes>'
 
 **Portal → Storage account → Containers → images → azure-amd64.vhd** should now exist.
 
-Rename the blob to `talos-<talos_version>.vhd` (for example `talos-v1.14.2.vhd`) (blob → ⋯ → Rename) and copy its **Overview → URL** for the next step.
+Rename the blob to `talos-<talos_version>.vhd` (for example `talos-v1.14.4.vhd`) (blob → ⋯ → Rename) and copy its **Overview → URL** for the next step.
 
 ### B.4 — Register as custom image
 
 **Portal → Images → + Create**
 
 - Resource group: `eck-on-talos-test`
-- Name: `talos-<talos_version>` (for example `talos-v1.14.2`)
+- Name: `talos-<talos_version>` (for example `talos-v1.14.4`)
 - Region: same as RG
 - OS type: **Linux**
 - VM generation: **Gen 2**
