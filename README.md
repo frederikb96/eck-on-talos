@@ -1,6 +1,6 @@
 # <img src="assets/icon.png" alt="" height="56" valign="middle"> ECK on Talos
 
-[![CI](https://github.com/frederikb96/eck-on-talos/actions/workflows/ci.yaml/badge.svg)](https://github.com/frederikb96/eck-on-talos/actions/workflows/ci.yaml)
+[![CI](https://github.com/frederikberg/eck-on-talos/actions/workflows/ci.yaml/badge.svg)](https://github.com/frederikberg/eck-on-talos/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A hands-on guide to running a **production-ready, easy-to-maintain 3-node Elastic Stack** on **Talos Linux VMs** using **Elastic Cloud on Kubernetes (ECK)**. The result: Elasticsearch, Kibana, Fleet Server and Elastic Agent — all managed by the Kubernetes operator, running on an immutable OS with essentially zero maintenance burden.
@@ -206,7 +206,7 @@ curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 |
 ### Clone this repository
 
 ```bash
-git clone https://github.com/frederikb96/eck-on-talos.git
+git clone https://github.com/frederikberg/eck-on-talos.git
 cd eck-on-talos
 ```
 
