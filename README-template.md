@@ -1,6 +1,6 @@
 # Elastic Stack (ECK on Talos)
 
-> **Template — copy this file into your own private repository as `README.md`** after following [eck-on-talos](https://github.com/frederikb96/eck-on-talos), then fill in the placeholders below. It's a short operator-facing reference, not a tutorial.
+> **Template — copy this file into your own private repository as `README.md`** after following [eck-on-talos](https://github.com/frederikberg/eck-on-talos), then fill in the placeholders below. It's a short operator-facing reference, not a tutorial.
 
 ## Overview
 
@@ -33,17 +33,17 @@ ca/            Internal CA (gitignored; real files live in password manager)
 Everything in this repo is declarative. To change anything:
 
 1. Edit the relevant YAML file in a PR
-2. Run the commands in the [Maintenance section of the upstream guide](https://github.com/frederikb96/eck-on-talos#maintenance) against the cluster
+2. Run the commands in the [Maintenance section of the upstream guide](https://github.com/frederikberg/eck-on-talos#maintenance) against the cluster
 3. Commit and merge
 
 ### Common tasks
 
 - **Upgrade the Elastic Stack version** → bump every `version:` field in `kubernetes/eck-stack/values.yaml` and run `helm upgrade eck-stack elastic/eck-stack --version <chart-version> -n elastic-stack -f kubernetes/eck-stack/values.yaml`
-- **Upgrade Talos** → bump `talos_version` below, follow the upstream [Talos upgrade procedure](https://github.com/frederikb96/eck-on-talos#upgrading-talos)
+- **Upgrade Talos** → bump `talos_version` below, follow the upstream [Talos upgrade procedure](https://github.com/frederikberg/eck-on-talos#upgrading-talos)
 - **Upgrade the ECK operator** → bump the `--version` in the operator `helm upgrade` command from the upstream guide
-- **Rotate the internal CA** → follow the upstream [CA rotation procedure](https://github.com/frederikb96/eck-on-talos#rotating-the-internal-ca)
-- **Tune ILM retention** (do this on day one!) → follow the upstream [ILM policies step](https://github.com/frederikb96/eck-on-talos#-first-thing-to-do-in-kibana--set-ilm-policies-for-the-observability-data) to add delete phases to `logs@lifecycle`, `metrics@lifecycle`, `filebeat`, and `metricbeat`. Without this the observability data grows forever and eventually fills the data disks.
-- **Clean reset** (bootstrap gone wrong) → follow the upstream [Clean reset procedure](https://github.com/frederikb96/eck-on-talos#clean-reset-wipe-all-elastic-data-and-start-over) — wipes `/var/mnt/data` on every node and re-rolls the stack from the repo files.
+- **Rotate the internal CA** → follow the upstream [CA rotation procedure](https://github.com/frederikberg/eck-on-talos#rotating-the-internal-ca)
+- **Tune ILM retention** (do this on day one!) → follow the upstream [ILM policies step](https://github.com/frederikberg/eck-on-talos#-first-thing-to-do-in-kibana--set-ilm-policies-for-the-observability-data) to add delete phases to `logs@lifecycle`, `metrics@lifecycle`, `filebeat`, and `metricbeat`. Without this the observability data grows forever and eventually fills the data disks.
+- **Clean reset** (bootstrap gone wrong) → follow the upstream [Clean reset procedure](https://github.com/frederikberg/eck-on-talos#clean-reset-wipe-all-elastic-data-and-start-over) — wipes `/var/mnt/data` on every node and re-rolls the stack from the repo files.
 - **Add a Kibana/Fleet user** → Kibana → Stack Management → Users
 - **Add an external Elastic Agent** → Kibana → Fleet → Agent policies → copy token, install agent with `--certificate-authorities=ca/ca.crt`
 
@@ -68,6 +68,6 @@ elastic_stack    = "9.3.8"
 
 ## References
 
-- Upstream deployment guide: <https://github.com/frederikb96/eck-on-talos>
+- Upstream deployment guide: <https://github.com/frederikberg/eck-on-talos>
 - ECK docs: <https://www.elastic.co/guide/en/cloud-on-k8s/current/index.html>
 - Talos docs: <https://www.talos.dev/latest/>
